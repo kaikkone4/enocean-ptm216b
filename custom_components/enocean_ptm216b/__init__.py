@@ -10,13 +10,15 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import ENOCEAN_MANUFACTURER_ID
 from .runtime_data import Ptm216bRuntimeData
+from .secret_store import IntegrationSecretStore
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Register a passive callback; this integration never connects to BLE devices."""
-    entry.runtime_data = Ptm216bRuntimeData()
+    secret = await IntegrationSecretStore(hass).async_get_or_create()
+    entry.runtime_data = Ptm216bRuntimeData(_hmac_secret=secret)
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
 
     @callback
@@ -43,5 +45,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload the passive callback and diagnostic sensor platform."""
+    """Unload callbacks/platforms and discard ephemeral capture state."""
+    entry.runtime_data.cancel_designation_capture()
     return await hass.config_entries.async_unload_platforms(entry, ["sensor"])

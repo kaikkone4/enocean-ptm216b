@@ -26,7 +26,7 @@ Until that decoder exists, this integration is observation-only. It does not aff
 
 ## Designated test-session counter (Phase 1.5)
 
-The repository also contains a pure, in-memory `DesignatedSessionCounter` for controlled observation tests. It is intentionally not wired into Home Assistant yet because there is no designation configuration or pseudonymous-identifier handoff in the runtime path.
+The repository contains a pure, in-memory `DesignatedSessionCounter` and an inert, manually-started 30-second designation-capture foundation. The integration-local HMAC secret is stored privately by Home Assistant; it is not placed in config-entry data. Capture currently does not ingest advertisements or designate a device, so **this phase does not enable a new physical press test yet**.
 
 Its exact limits are:
 
