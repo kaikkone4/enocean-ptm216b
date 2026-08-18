@@ -1,0 +1,4 @@
+pytest-homeassistant-custom-component==0.13.214
+aiousbwatcher==1.1.1
+pyserial==3.5
+ruff==0.15.22
