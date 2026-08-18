@@ -9,24 +9,32 @@ from typing import Callable
 from .identity import device_identifier
 
 DESIGNATION_CAPTURE_SECONDS = 30.0
+# Three observations reject one-off ambient noise without interpreting timing or payload.
+MINIMUM_DESIGNATION_OBSERVATIONS = 3
 CaptureTimerCancel = Callable[[], None]
 CaptureScheduler = Callable[[float, Callable[[], None]], CaptureTimerCancel]
+CaptureStateListener = Callable[[], None]
 
 
 class CaptureState(Enum):
     """Lifecycle states for the bounded manual designation capture."""
 
     INERT = "inert"
-    CAPTURING = "capturing"
+    CAPTURING = "active"
+
+
+class DesignationOutcome(Enum):
+    """Privacy-safe result values exposed by the diagnostic entity."""
+
+    SELECTED = "selected"
+    NO_SELECTION = "no_selection"
 
 
 @dataclass
 class DesignationCandidate:
-    """Aggregate timing only for one ephemeral pseudonymous candidate."""
+    """Aggregate count only for one ephemeral pseudonymous candidate."""
 
     observation_count: int
-    first_seen_monotonic: float
-    last_seen_monotonic: float
 
 
 @dataclass
@@ -36,31 +44,49 @@ class Ptm216bRuntimeData:
     _hmac_secret: bytes = field(repr=False)
     advertisement_count: int = 0
     capture_state: CaptureState = CaptureState.INERT
+    capture_observation_count: int = 0
+    designation_outcome: DesignationOutcome = DesignationOutcome.NO_SELECTION
     designated_identifier: str | None = field(default=None, repr=False)
     designation_candidates: dict[str, DesignationCandidate] = field(
         default_factory=dict, repr=False
     )
     capture_timer: CaptureTimerCancel | None = field(default=None, repr=False)
+    capture_state_listener: CaptureStateListener | None = field(
+        default=None, repr=False
+    )
 
     def start_designation_capture(self, schedule: CaptureScheduler) -> None:
         """Start a bounded capture only in response to a manual request."""
-        self.cancel_designation_capture()
+        cancel_timer = self.capture_timer
+        if cancel_timer is not None:
+            cancel_timer()
+        self.capture_timer = None
+        self.capture_observation_count = 0
+        self.designation_outcome = DesignationOutcome.NO_SELECTION
+        self.designated_identifier = None
+        self.designation_candidates.clear()
         self.capture_state = CaptureState.CAPTURING
         self.capture_timer = schedule(
             DESIGNATION_CAPTURE_SECONDS, self._finish_designation_capture
         )
+        self._notify_capture_state()
 
     def cancel_designation_capture(self) -> None:
-        """Cancel the timer and discard all ephemeral candidates."""
+        """Cancel the timer and discard all ephemeral capture state."""
         cancel_timer = self.capture_timer
         self.capture_timer = None
         if cancel_timer is not None:
             cancel_timer()
         self.capture_state = CaptureState.INERT
+        self.capture_observation_count = 0
+        self.designation_outcome = DesignationOutcome.NO_SELECTION
         self.designated_identifier = None
         self.designation_candidates.clear()
+        self._notify_capture_state()
 
-    def record_designation_candidate(self, address: str, monotonic_time: float) -> None:
+    def record_designation_candidate(
+        self, address: str, _monotonic_time: float | None = None
+    ) -> None:
         """Aggregate a transient address only while manual capture is active."""
         if self.capture_state is not CaptureState.CAPTURING:
             return
@@ -69,20 +95,34 @@ class Ptm216bRuntimeData:
         except ValueError:
             return
 
+        self.capture_observation_count += 1
         candidate = self.designation_candidates.get(identifier)
         if candidate is None:
             self.designation_candidates[identifier] = DesignationCandidate(
-                observation_count=1,
-                first_seen_monotonic=monotonic_time,
-                last_seen_monotonic=monotonic_time,
+                observation_count=1
             )
-            return
-        candidate.observation_count += 1
-        candidate.last_seen_monotonic = monotonic_time
+        else:
+            candidate.observation_count += 1
+        self._notify_capture_state()
 
     def _finish_designation_capture(self) -> None:
-        """Fail closed and discard all candidates when the timer expires."""
+        """Select only one repeatedly observed passive candidate, else fail closed."""
         self.capture_state = CaptureState.INERT
-        self.designated_identifier = None
+        candidates = tuple(self.designation_candidates.items())
+        if (
+            len(candidates) == 1
+            and candidates[0][1].observation_count >= MINIMUM_DESIGNATION_OBSERVATIONS
+        ):
+            self.designated_identifier = candidates[0][0]
+            self.designation_outcome = DesignationOutcome.SELECTED
+        else:
+            self.designated_identifier = None
+            self.designation_outcome = DesignationOutcome.NO_SELECTION
         self.designation_candidates.clear()
         self.capture_timer = None
+        self._notify_capture_state()
+
+    def _notify_capture_state(self) -> None:
+        """Notify the privacy-safe diagnostic entity of aggregate changes."""
+        if self.capture_state_listener is not None:
+            self.capture_state_listener()

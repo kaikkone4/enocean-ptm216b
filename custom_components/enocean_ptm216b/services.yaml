@@ -1,0 +1,6 @@
+start_designation_capture:
+  name: Start designation capture
+  description: >-
+    Deliberately starts a 30-second passive designation capture. Selection occurs
+    only when exactly one candidate has at least three advertisement observations;
+    otherwise the result is no_selection.
