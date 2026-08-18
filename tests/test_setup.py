@@ -4,6 +4,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.enocean_ptm216b.const import DOMAIN
+from custom_components.enocean_ptm216b.runtime_data import CaptureState
 
 
 @pytest.mark.asyncio
@@ -25,6 +26,9 @@ async def test_setup_registers_passive_enocean_advertisement_callback(hass, capl
         assert await enocean_ptm216b.async_setup_entry(hass, entry)
 
     forward_setups.assert_awaited_once_with(entry, ["sensor"])
+    assert entry.runtime_data.capture_state is CaptureState.INERT
+    assert entry.data == {}
+    assert "secret" not in repr(entry.runtime_data)
     callback = register_callback.call_args.args[1]
     caplog.set_level("DEBUG")
     service_info = Mock(address="AA:BB:CC:DD:EE:FF")
