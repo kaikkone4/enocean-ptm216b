@@ -24,6 +24,21 @@ A future decoder must validate the PTM's authenticated/encrypted telegram data b
 
 Until that decoder exists, this integration is observation-only. It does not affect any existing Casambi pairing or lighting control.
 
+## Designated test-session counter (Phase 1.5)
+
+The repository also contains a pure, in-memory `DesignatedSessionCounter` for controlled observation tests. It is intentionally not wired into Home Assistant yet because there is no designation configuration or pseudonymous-identifier handoff in the runtime path.
+
+Its exact limits are:
+
+- input is only an already-pseudonymous identifier and a caller-injected monotonic timestamp
+- only the configured designated identifier changes the counters; with no designation, nothing is counted
+- each designated observation increments the observation count
+- a designated observation starts a new session when it is the first observation or at least **1.0 seconds** after the previous designated observation; the exact 1.0-second boundary starts a new session
+- state is runtime-only: the configured pseudonymous identifier, counts, and latest designated monotonic timestamp
+- it does not accept, retain, or log raw BLE payloads or BLE addresses
+- it performs no scanning, connection, pairing, decoding, authentication, or replay protection
+- it emits no Home Assistant actions, events, triggers, entities, or state updates
+
 ## Test installation with HACS
 
 1. In Home Assistant, open **HACS → Integrations → ⋮ → Custom repositories**.
