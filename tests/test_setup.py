@@ -43,3 +43,29 @@ async def test_setup_registers_passive_enocean_advertisement_callback(hass, capl
     _, _, matcher, mode = register_callback.call_args.args
     assert matcher == {"manufacturer_id": 0x03DA, "connectable": False}
     assert mode.name == "PASSIVE"
+
+
+@pytest.mark.asyncio
+async def test_setup_reuses_integration_secret_from_private_storage(hass):
+    entry = MockConfigEntry(domain=DOMAIN)
+    entry.add_to_hass(hass)
+    stored_secret = b"persisted-private-secret-material"
+
+    with (
+        patch(
+            "custom_components.enocean_ptm216b.bluetooth.async_register_callback",
+            return_value=Mock(),
+        ),
+        patch.object(hass.config_entries, "async_forward_entry_setups", AsyncMock()),
+        patch(
+            "custom_components.enocean_ptm216b.IntegrationSecretStore.async_get_or_create",
+            AsyncMock(return_value=stored_secret),
+        ) as get_secret,
+    ):
+        from custom_components import enocean_ptm216b
+
+        assert await enocean_ptm216b.async_setup_entry(hass, entry)
+
+    get_secret.assert_awaited_once_with()
+    assert entry.runtime_data._hmac_secret == stored_secret
+    assert entry.data == {}

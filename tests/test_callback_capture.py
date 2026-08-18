@@ -62,13 +62,9 @@ async def test_callback_aggregates_only_pseudonymous_candidates_during_capture(
     first = Mock(address=ADDRESS, manufacturer_data={0x03DA: RAW_PAYLOAD})
     second = Mock(address=OTHER_ADDRESS, manufacturer_data={0x03DA: b"other-private"})
 
-    with patch(
-        "custom_components.enocean_ptm216b.monotonic",
-        side_effect=[10.0, 10.25, 12.0],
-    ):
-        advertisement_callback(first, Mock())
-        advertisement_callback(first, Mock())
-        advertisement_callback(second, Mock())
+    advertisement_callback(first, Mock())
+    advertisement_callback(first, Mock())
+    advertisement_callback(second, Mock())
 
     identifier = device_identifier(entry.runtime_data._hmac_secret, ADDRESS)
     other_identifier = device_identifier(entry.runtime_data._hmac_secret, OTHER_ADDRESS)
@@ -78,13 +74,7 @@ async def test_callback_aggregates_only_pseudonymous_candidates_during_capture(
     }
     candidate = entry.runtime_data.designation_candidates[identifier]
     assert candidate.observation_count == 2
-    assert candidate.first_seen_monotonic == 10.0
-    assert candidate.last_seen_monotonic == 10.25
-    assert vars(candidate) == {
-        "observation_count": 2,
-        "first_seen_monotonic": 10.0,
-        "last_seen_monotonic": 10.25,
-    }
+    assert vars(candidate) == {"observation_count": 2}
     assert len(identifier) == 64
     assert ADDRESS not in repr(entry.runtime_data)
     assert repr(RAW_PAYLOAD) not in repr(entry.runtime_data)

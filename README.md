@@ -24,23 +24,36 @@ A future decoder must validate the PTM's authenticated/encrypted telegram data b
 
 Until that decoder exists, this integration is observation-only. It does not affect any existing Casambi pairing or lighting control.
 
-## Designated test-session counter (Phase 1.5)
+## Manual designation capture (Phase 1.5)
 
-The repository contains a pure, in-memory `DesignatedSessionCounter` and a manually-started 30-second designation-capture foundation. During an explicitly active capture only, the existing passive Bluetooth callback transiently converts each callback address into a full SHA-256 HMAC identifier using the integration-local private secret. Ephemeral candidate records retain only observation count plus first/last monotonic times, keyed by that full digest.
+Home Assistant registers the deliberately invoked `enocean_ptm216b.start_designation_capture` action. That action is never invoked automatically; setup and passive observations never start capture. Each invocation starts a fresh **30-second** window.
 
-This slice deliberately implements **no candidate selection**. At expiry it fails closed: every candidate is discarded and the designated identifier remains unset. There is still no UI or service that starts capture and no physical-press test is enabled yet.
+At expiry the integration selects a runtime-only designation only when **exactly one** candidate was observed at least **three** times. Three is a conservative noise floor: it rejects one-off and duplicate ambient noise while using only a passive advertisement count. It does not inspect payload content or timing, group packets into presses, or infer button events. Zero candidates, one or two observations, or any second candidate always produce `no_selection`; candidates are then cleared.
 
-Its exact limits are:
+The **Designation capture** diagnostic sensor exposes only:
 
-- outside an explicitly active capture, callback addresses do not create candidates
-- capture lasts exactly **30 seconds** as enforced by the existing injected scheduler
-- candidate state contains only the full HMAC digest, aggregate count, and first/last monotonic times, and remains in per-entry ephemeral memory
-- raw BLE addresses and manufacturer payloads are not retained, logged, decoded, or copied into candidate state
-- the HMAC secret and pseudonymous identifiers are not placed in config-entry data, Home Assistant entity state, diagnostics, logs, Git, or UI; the secret remains in Home Assistant's private integration storage and runtime memory
-- expiry, cancellation, restart, and unload discard all candidate aggregates; expiry never auto-selects a designation
-- the separate `DesignatedSessionCounter` remains unwired; with no designated identifier, it counts nothing
-- it performs no active scanning, BLE connection, pairing, bonding, GATT access, packet decoding, authentication, or replay protection
-- it emits no Home Assistant actions, events, triggers, or designation-related entities/state updates; the existing aggregate advertisement diagnostic counter is unchanged
+- state: `active` or `inert`
+- `observation_count`: aggregate valid-address observations in the current/latest window
+- `designation_outcome`: `selected` or `no_selection`
+
+Its exact privacy and radio limits are:
+
+- candidate records are ephemeral and contain only a full local HMAC identifier plus an aggregate count
+- the integration-local 32-byte HMAC secret is retained in Home Assistant's private integration Store and loaded into runtime memory; it is never placed in config-entry data, entity state, diagnostics, logs, Git, or UI
+- raw BLE addresses, raw payloads, and full pseudonymous identifiers are never persisted or exposed in entity state/attributes, logs, diagnostics, service data, config-entry data, or UI
+- expiry clears all candidates; cancellation, restart, and unload clear candidates, designation, aggregate capture count, and outcome
+- the separate `DesignatedSessionCounter` remains unwired and emits nothing
+- Bluetooth remains passive and non-connectable only: no active scanning, connection, pairing, bonding, GATT access, packet decoding, authentication, or replay protection
+- no button actions, events, triggers, or press/session inference are emitted
+
+### Safe user-visible test
+
+1. Install this PR build, restart Home Assistant, and add **EnOcean PTM 216B BLE** once.
+2. Open **Developer Tools → Actions** and select `enocean_ptm216b.start_designation_capture`. Leave action data empty and run it deliberately once.
+3. Open the integration's **Designation capture** diagnostic sensor. It must change from `inert` to `active`; `observation_count` starts at `0`.
+4. For the isolated happy-path test, keep other EnOcean advertisers quiet and cause the one intended test device to advertise at least three times during the 30-second window. The integration only counts passive advertisements; it does not interpret these as presses.
+5. After 30 seconds, verify state `inert` and outcome `selected`. If no device, fewer than three observations, or more than one candidate was observed, verify the fail-closed outcome `no_selection` instead.
+6. Verify no address, payload, key/secret, or identifier is shown anywhere. Do not enter or upload commissioning material.
 
 ## Test installation with HACS
 
