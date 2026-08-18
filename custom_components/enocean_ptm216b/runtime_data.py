@@ -8,6 +8,7 @@ from typing import Callable
 
 from .identity import device_identifier
 
+DESIGNATION_BASELINE_SECONDS = 10.0
 DESIGNATION_CAPTURE_SECONDS = 30.0
 # Three observations reject one-off ambient noise without interpreting timing or payload.
 MINIMUM_DESIGNATION_OBSERVATIONS = 3
@@ -20,7 +21,9 @@ class CaptureState(Enum):
     """Lifecycle states for the bounded manual designation capture."""
 
     INERT = "inert"
-    CAPTURING = "active"
+    BASELINE = "baseline"
+    PRESS = "press"
+    CONFIRMING = "confirmation"
 
 
 class DesignationOutcome(Enum):
@@ -47,16 +50,18 @@ class Ptm216bRuntimeData:
     capture_observation_count: int = 0
     designation_outcome: DesignationOutcome = DesignationOutcome.NO_SELECTION
     designated_identifier: str | None = field(default=None, repr=False)
+    first_window_identifier: str | None = field(default=None, repr=False)
     designation_candidates: dict[str, DesignationCandidate] = field(
         default_factory=dict, repr=False
     )
     capture_timer: CaptureTimerCancel | None = field(default=None, repr=False)
+    capture_scheduler: CaptureScheduler | None = field(default=None, repr=False)
     capture_state_listener: CaptureStateListener | None = field(
         default=None, repr=False
     )
 
     def start_designation_capture(self, schedule: CaptureScheduler) -> None:
-        """Start a bounded capture only in response to a manual request."""
+        """Start a bounded baseline only in response to a manual request."""
         cancel_timer = self.capture_timer
         if cancel_timer is not None:
             cancel_timer()
@@ -64,10 +69,12 @@ class Ptm216bRuntimeData:
         self.capture_observation_count = 0
         self.designation_outcome = DesignationOutcome.NO_SELECTION
         self.designated_identifier = None
+        self.first_window_identifier = None
         self.designation_candidates.clear()
-        self.capture_state = CaptureState.CAPTURING
+        self.capture_scheduler = schedule
+        self.capture_state = CaptureState.BASELINE
         self.capture_timer = schedule(
-            DESIGNATION_CAPTURE_SECONDS, self._finish_designation_capture
+            DESIGNATION_BASELINE_SECONDS, self._finish_designation_baseline
         )
         self._notify_capture_state()
 
@@ -81,14 +88,20 @@ class Ptm216bRuntimeData:
         self.capture_observation_count = 0
         self.designation_outcome = DesignationOutcome.NO_SELECTION
         self.designated_identifier = None
+        self.first_window_identifier = None
         self.designation_candidates.clear()
+        self.capture_scheduler = None
         self._notify_capture_state()
 
     def record_designation_candidate(
         self, address: str, _monotonic_time: float | None = None
     ) -> None:
-        """Aggregate a transient address only while manual capture is active."""
-        if self.capture_state is not CaptureState.CAPTURING:
+        """Aggregate a transient address only during a bounded capture phase."""
+        if self.capture_state not in (
+            CaptureState.BASELINE,
+            CaptureState.PRESS,
+            CaptureState.CONFIRMING,
+        ):
             return
         try:
             identifier = device_identifier(self._hmac_secret, address)
@@ -105,21 +118,72 @@ class Ptm216bRuntimeData:
             candidate.observation_count += 1
         self._notify_capture_state()
 
+    def _finish_designation_baseline(self) -> None:
+        """Require a quiet baseline before arming the first press window."""
+        if self.designation_candidates:
+            self._finish_without_selection()
+            return
+        schedule = self.capture_scheduler
+        if schedule is None:
+            self._finish_without_selection()
+            return
+        self.capture_observation_count = 0
+        self.capture_state = CaptureState.PRESS
+        self.capture_timer = schedule(
+            DESIGNATION_CAPTURE_SECONDS, self._finish_designation_capture
+        )
+        self._notify_capture_state()
+
     def _finish_designation_capture(self) -> None:
-        """Select only one repeatedly observed passive candidate, else fail closed."""
-        self.capture_state = CaptureState.INERT
+        """Arm confirmation only for one unique first-window candidate."""
         candidates = tuple(self.designation_candidates.items())
-        if (
+        if not (
             len(candidates) == 1
             and candidates[0][1].observation_count >= MINIMUM_DESIGNATION_OBSERVATIONS
         ):
-            self.designated_identifier = candidates[0][0]
-            self.designation_outcome = DesignationOutcome.SELECTED
-        else:
-            self.designated_identifier = None
-            self.designation_outcome = DesignationOutcome.NO_SELECTION
+            self._finish_without_selection()
+            return
+        schedule = self.capture_scheduler
+        if schedule is None:
+            self._finish_without_selection()
+            return
+        self.first_window_identifier = candidates[0][0]
+        self.designation_candidates.clear()
+        self.capture_observation_count = 0
+        self.capture_state = CaptureState.CONFIRMING
+        self.capture_timer = schedule(
+            DESIGNATION_CAPTURE_SECONDS, self._finish_designation_confirmation
+        )
+        self._notify_capture_state()
+
+    def _finish_designation_confirmation(self) -> None:
+        """Select only the same sole candidate from both independent windows."""
+        candidates = tuple(self.designation_candidates.items())
+        if not (
+            len(candidates) == 1
+            and candidates[0][0] == self.first_window_identifier
+            and candidates[0][1].observation_count >= MINIMUM_DESIGNATION_OBSERVATIONS
+        ):
+            self._finish_without_selection()
+            return
+        self.capture_state = CaptureState.INERT
+        self.designated_identifier = candidates[0][0]
+        self.first_window_identifier = None
+        self.designation_outcome = DesignationOutcome.SELECTED
         self.designation_candidates.clear()
         self.capture_timer = None
+        self.capture_scheduler = None
+        self._notify_capture_state()
+
+    def _finish_without_selection(self) -> None:
+        """Fail closed and discard all ephemeral capture data."""
+        self.capture_state = CaptureState.INERT
+        self.designated_identifier = None
+        self.first_window_identifier = None
+        self.designation_outcome = DesignationOutcome.NO_SELECTION
+        self.designation_candidates.clear()
+        self.capture_timer = None
+        self.capture_scheduler = None
         self._notify_capture_state()
 
     def _notify_capture_state(self) -> None:

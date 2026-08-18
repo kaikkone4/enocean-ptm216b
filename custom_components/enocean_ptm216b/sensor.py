@@ -60,7 +60,7 @@ class Ptm216bDesignationCaptureSensor(SensorEntity):
 
     @property
     def native_value(self) -> str:
-        """Return only whether capture is active or inert."""
+        """Return the current bounded phase or inert state."""
         return self._entry.runtime_data.capture_state.value
 
     @property

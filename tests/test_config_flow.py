@@ -38,6 +38,6 @@ async def test_reconfigure_requires_manual_confirmation_before_capture(hass):
 
     assert result["type"] == "abort"
     assert result["reason"] == "designation_capture_started"
-    assert entry.runtime_data.capture_state is CaptureState.CAPTURING
+    assert entry.runtime_data.capture_state is CaptureState.BASELINE
     assert entry.data == {}
     entry.runtime_data.cancel_designation_capture()

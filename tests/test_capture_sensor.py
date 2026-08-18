@@ -31,17 +31,21 @@ def test_capture_sensor_exposes_only_safe_aggregate_state():
     assert "identifier" not in serialized
 
 
-def test_capture_sensor_reports_active_count_and_generic_selected_outcome():
+def test_capture_sensor_reports_phases_and_selects_only_after_confirmation():
     schedule = Mock(return_value=Mock())
     entry = Mock(entry_id="entry-id")
     entry.runtime_data = Ptm216bRuntimeData(_hmac_secret=SECRET)
     sensor = Ptm216bDesignationCaptureSensor(entry)
 
     entry.runtime_data.start_designation_capture(schedule)
+    assert sensor.native_value == "baseline"
+
+    schedule.call_args.args[1]()
+    assert sensor.native_value == "press"
+
     for observed_at in range(MINIMUM_DESIGNATION_OBSERVATIONS):
         entry.runtime_data.record_designation_candidate(ADDRESS, float(observed_at))
 
-    assert sensor.native_value == "active"
     assert sensor.extra_state_attributes == {
         "observation_count": MINIMUM_DESIGNATION_OBSERVATIONS,
         "designation_outcome": "no_selection",
@@ -49,11 +53,23 @@ def test_capture_sensor_reports_active_count_and_generic_selected_outcome():
 
     schedule.call_args.args[1]()
 
+    assert sensor.native_value == "confirmation"
+    assert sensor.extra_state_attributes == {
+        "observation_count": 0,
+        "designation_outcome": "no_selection",
+    }
+    assert entry.runtime_data.designated_identifier is None
+
+    for observed_at in range(MINIMUM_DESIGNATION_OBSERVATIONS):
+        entry.runtime_data.record_designation_candidate(ADDRESS, float(observed_at))
+    schedule.call_args.args[1]()
+
     assert sensor.native_value == "inert"
     assert sensor.extra_state_attributes == {
         "observation_count": MINIMUM_DESIGNATION_OBSERVATIONS,
         "designation_outcome": "selected",
     }
+    assert entry.runtime_data.designated_identifier is not None
     assert entry.runtime_data.designated_identifier not in repr(
         sensor.extra_state_attributes
     )

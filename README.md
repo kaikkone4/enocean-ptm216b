@@ -26,34 +26,40 @@ Until that decoder exists, this integration is observation-only. It does not aff
 
 ## Manual designation capture (Phase 1.5)
 
-Home Assistant registers the deliberately invoked `enocean_ptm216b.start_designation_capture` action. That action is never invoked automatically; setup and passive observations never start capture. Each invocation starts a fresh **30-second** window.
+Manual designation is available only from the integration's **Reconfigure** flow. Setup and passive observations never start it, and the integration registers no action/service for capture or device control.
 
-At expiry the integration selects a runtime-only designation only when **exactly one** candidate was observed at least **three** times. Three is a conservative noise floor: it rejects one-off and duplicate ambient noise while using only a passive advertisement count. It does not inspect payload content or timing, group packets into presses, or infer button events. Zero candidates, one or two observations, or any second candidate always produce `no_selection`; candidates are then cleared.
+One deliberate request starts three bounded phases; a single 30-second sample can never select a device:
+
+1. **`baseline` (10 seconds):** keep the switch quiet. Any matching candidate fails the attempt closed.
+2. **`press` (30 seconds):** make three short normal presses on one specified button, about two seconds apart. Exactly one address-derived HMAC candidate must produce at least three passive observations.
+3. **`confirmation` (a separate 30 seconds):** repeat the same instruction. Exactly one candidate must again produce at least three observations, and its full in-memory HMAC digest must match the first window.
+
+Selection occurs only after both independent press windows uniquely match. No candidate, too few observations, any ambiguity, confirmation mismatch, or a rotating address produces `no_selection`. Every phase transition clears its candidate map; terminal timeout, restart, cancellation, and unload clear all maps, the first-window identifier, scheduler, and timer. The selected digest is runtime-only and is also cleared on restart, cancellation, or unload.
 
 The **Designation capture** diagnostic sensor exposes only:
 
-- state: `active` or `inert`
-- `observation_count`: aggregate valid-address observations in the current/latest window
+- state: `inert`, `baseline`, `press`, or `confirmation`
+- `observation_count`: aggregate valid-address observations in the current/latest phase
 - `designation_outcome`: `selected` or `no_selection`
 
 Its exact privacy and radio limits are:
 
-- candidate records are ephemeral and contain only a full local HMAC identifier plus an aggregate count
-- the integration-local 32-byte HMAC secret is retained in Home Assistant's private integration Store and loaded into runtime memory; it is never placed in config-entry data, entity state, diagnostics, logs, Git, or UI
-- raw BLE addresses, raw payloads, and full pseudonymous identifiers are never persisted or exposed in entity state/attributes, logs, diagnostics, service data, config-entry data, or UI
-- expiry clears all candidates; cancellation, restart, and unload clear candidates, designation, aggregate capture count, and outcome
+- candidate records are ephemeral and contain only a full local HMAC identifier plus an aggregate count; no address, payload, or timing is retained
+- the integration-local 32-byte HMAC secret is retained only in Home Assistant's private integration Store and loaded into runtime memory; it is never placed in config-entry data, entity state, diagnostics, logs, Git, or UI
+- raw BLE addresses, raw payloads, full pseudonymous identifiers, candidate maps, and timing data are never persisted or exposed in entity state/attributes, logs, diagnostics, config-entry data, or UI
 - the separate `DesignatedSessionCounter` remains unwired and emits nothing
 - Bluetooth remains passive and non-connectable only: no active scanning, connection, pairing, bonding, GATT access, packet decoding, authentication, or replay protection
-- no button actions, events, triggers, or press/session inference are emitted
+- no button actions, services, events, triggers, automations, or press/session inference are emitted
 
 ### Safe user-visible test
 
 1. Install this PR build, restart Home Assistant, and add **EnOcean PTM 216B BLE** once.
-2. Open **Developer Tools → Actions** and select `enocean_ptm216b.start_designation_capture`. Leave action data empty and run it deliberately once.
-3. Open the integration's **Designation capture** diagnostic sensor. It must change from `inert` to `active`; `observation_count` starts at `0`.
-4. For the isolated happy-path test, keep other EnOcean advertisers quiet and cause the one intended test device to advertise at least three times during the 30-second window. The integration only counts passive advertisements; it does not interpret these as presses.
-5. After 30 seconds, verify state `inert` and outcome `selected`. If no device, fewer than three observations, or more than one candidate was observed, verify the fail-closed outcome `no_selection` instead.
-6. Verify no address, payload, key/secret, or identifier is shown anywhere. Do not enter or upload commissioning material.
+2. Open the integration, choose **Reconfigure**, and deliberately confirm once. Do not use Developer Tools → Actions; no capture action is registered.
+3. Watch **Designation capture**. During `baseline` keep all EnOcean test switches quiet.
+4. When state becomes `press`, make three short normal presses on one specified button, two seconds apart, then stop.
+5. Wait for state `confirmation`, then repeat the same three-press sequence on the same button.
+6. After the confirmation window, verify `inert` and `selected`. Any baseline traffic, ambiguity, too few observations, or changed/rotating address must instead end as `no_selection`.
+7. Verify no address, payload, secret, full identifier, candidate map, or timing appears anywhere. Do not enter or upload commissioning material.
 
 ## Test installation with HACS
 
