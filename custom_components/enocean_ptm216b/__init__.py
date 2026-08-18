@@ -29,11 +29,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         sensor = getattr(entry.runtime_data, "sensor", None)
         if sensor is not None:
             sensor.async_write_ha_state()
-        _LOGGER.debug(
-            "Observed EnOcean BLE advertisement from %s (%s)",
-            service_info.address,
-            change,
-        )
+        _LOGGER.debug("Observed matching EnOcean BLE advertisement")
 
     entry.async_on_unload(
         bluetooth.async_register_callback(
