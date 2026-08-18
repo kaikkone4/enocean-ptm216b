@@ -26,6 +26,7 @@ async def test_setup_registers_passive_enocean_advertisement_callback(hass, capl
         assert await enocean_ptm216b.async_setup_entry(hass, entry)
 
     forward_setups.assert_awaited_once_with(entry, ["sensor"])
+    assert not hass.services.has_service(DOMAIN, "start_designation_capture")
     assert entry.runtime_data.capture_state is CaptureState.INERT
     assert entry.data == {}
     assert "secret" not in repr(entry.runtime_data)
