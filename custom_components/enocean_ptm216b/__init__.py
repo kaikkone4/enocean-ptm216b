@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from time import monotonic
 
 from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
@@ -28,6 +29,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ) -> None:
         """Observe matching advertisements without decoding or emitting actions yet."""
         entry.runtime_data.advertisement_count += 1
+        entry.runtime_data.record_designation_candidate(
+            service_info.address, monotonic()
+        )
         sensor = getattr(entry.runtime_data, "sensor", None)
         if sensor is not None:
             sensor.async_write_ha_state()

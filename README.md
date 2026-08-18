@@ -26,18 +26,21 @@ Until that decoder exists, this integration is observation-only. It does not aff
 
 ## Designated test-session counter (Phase 1.5)
 
-The repository contains a pure, in-memory `DesignatedSessionCounter` and an inert, manually-started 30-second designation-capture foundation. The integration-local HMAC secret is stored privately by Home Assistant; it is not placed in config-entry data. Capture currently does not ingest advertisements or designate a device, so **this phase does not enable a new physical press test yet**.
+The repository contains a pure, in-memory `DesignatedSessionCounter` and a manually-started 30-second designation-capture foundation. During an explicitly active capture only, the existing passive Bluetooth callback transiently converts each callback address into a full SHA-256 HMAC identifier using the integration-local private secret. Ephemeral candidate records retain only observation count plus first/last monotonic times, keyed by that full digest.
+
+This slice deliberately implements **no candidate selection**. At expiry it fails closed: every candidate is discarded and the designated identifier remains unset. There is still no UI or service that starts capture and no physical-press test is enabled yet.
 
 Its exact limits are:
 
-- input is only an already-pseudonymous identifier and a caller-injected monotonic timestamp
-- only the configured designated identifier changes the counters; with no designation, nothing is counted
-- each designated observation increments the observation count
-- a designated observation starts a new session when it is the first observation or at least **1.0 seconds** after the previous designated observation; the exact 1.0-second boundary starts a new session
-- state is runtime-only: the configured pseudonymous identifier, counts, and latest designated monotonic timestamp
-- it does not accept, retain, or log raw BLE payloads or BLE addresses
-- it performs no scanning, connection, pairing, decoding, authentication, or replay protection
-- it emits no Home Assistant actions, events, triggers, entities, or state updates
+- outside an explicitly active capture, callback addresses do not create candidates
+- capture lasts exactly **30 seconds** as enforced by the existing injected scheduler
+- candidate state contains only the full HMAC digest, aggregate count, and first/last monotonic times, and remains in per-entry ephemeral memory
+- raw BLE addresses and manufacturer payloads are not retained, logged, decoded, or copied into candidate state
+- the HMAC secret and pseudonymous identifiers are not placed in config-entry data, Home Assistant entity state, diagnostics, logs, Git, or UI; the secret remains in Home Assistant's private integration storage and runtime memory
+- expiry, cancellation, restart, and unload discard all candidate aggregates; expiry never auto-selects a designation
+- the separate `DesignatedSessionCounter` remains unwired; with no designated identifier, it counts nothing
+- it performs no active scanning, BLE connection, pairing, bonding, GATT access, packet decoding, authentication, or replay protection
+- it emits no Home Assistant actions, events, triggers, or designation-related entities/state updates; the existing aggregate advertisement diagnostic counter is unchanged
 
 ## Test installation with HACS
 

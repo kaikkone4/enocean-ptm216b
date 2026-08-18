@@ -13,7 +13,7 @@ def test_designation_capture_is_inert_by_default():
     runtime = Ptm216bRuntimeData(_hmac_secret=SECRET)
 
     assert runtime.capture_state is CaptureState.INERT
-    assert runtime.designation_candidates == set()
+    assert runtime.designation_candidates == {}
     assert runtime.capture_timer is None
 
 
@@ -32,7 +32,7 @@ def test_designation_capture_starts_only_after_manual_request():
     schedule.call_args.args[1]()
 
     assert runtime.capture_state is CaptureState.INERT
-    assert runtime.designation_candidates == set()
+    assert runtime.designation_candidates == {}
     assert runtime.capture_timer is None
 
 
@@ -53,11 +53,27 @@ def test_cancellation_clears_timer_and_candidate_container():
     cancel_timer = Mock()
     runtime = Ptm216bRuntimeData(_hmac_secret=SECRET)
     runtime.start_designation_capture(Mock(return_value=cancel_timer))
-    runtime.designation_candidates.add("local-pseudonym")
+    runtime.record_designation_candidate("AA:BB:CC:DD:EE:FF", 1.0)
 
     runtime.cancel_designation_capture()
 
     cancel_timer.assert_called_once_with()
     assert runtime.capture_state is CaptureState.INERT
-    assert runtime.designation_candidates == set()
+    assert runtime.designation_candidates == {}
+    assert runtime.capture_timer is None
+
+
+def test_expiry_discards_candidates_and_leaves_designation_unset():
+    schedule = Mock(return_value=Mock())
+    runtime = Ptm216bRuntimeData(_hmac_secret=SECRET)
+    runtime.start_designation_capture(schedule)
+    runtime.record_designation_candidate("AA:BB:CC:DD:EE:FF", 1.0)
+    runtime.designated_identifier = "must-be-cleared"
+    assert runtime.designation_candidates
+
+    schedule.call_args.args[1]()
+
+    assert runtime.capture_state is CaptureState.INERT
+    assert runtime.designation_candidates == {}
+    assert runtime.designated_identifier is None
     assert runtime.capture_timer is None

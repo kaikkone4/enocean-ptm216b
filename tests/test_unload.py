@@ -17,7 +17,7 @@ async def test_unload_unloads_sensor_platform(hass):
     cancel_timer = Mock()
     entry.runtime_data = Ptm216bRuntimeData(_hmac_secret=b"\x01" * 32)
     entry.runtime_data.start_designation_capture(Mock(return_value=cancel_timer))
-    entry.runtime_data.designation_candidates.add("local-pseudonym")
+    entry.runtime_data.record_designation_candidate("AA:BB:CC:DD:EE:FF", 1.0)
     entry.add_to_hass(hass)
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=True)
 
@@ -27,5 +27,5 @@ async def test_unload_unloads_sensor_platform(hass):
     )
     cancel_timer.assert_called_once_with()
     assert entry.runtime_data.capture_state is CaptureState.INERT
-    assert entry.runtime_data.designation_candidates == set()
+    assert entry.runtime_data.designation_candidates == {}
     assert entry.runtime_data.capture_timer is None
