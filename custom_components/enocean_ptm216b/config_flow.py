@@ -31,7 +31,7 @@ from .press_timing import (
     MAX_LONG_PRESS_THRESHOLD_MS,
     MIN_LONG_PRESS_THRESHOLD_MS,
 )
-from .qr_decode import is_qr_decode_available
+from .qr_decode import async_ensure_qr_decoder
 from .runtime_data import (
     DESIGNATION_BASELINE_SECONDS,
     DESIGNATION_CAPTURE_SECONDS,
@@ -357,7 +357,12 @@ class SwitchSubentryFlow(config_entries.ConfigSubentryFlow):
         step_id = "key_entry_detected" if detected else "key_entry_manual"
         entry = self._get_entry()
         runtime: Ptm216bRuntimeData = entry.runtime_data
-        qr_available = is_qr_decode_available()
+        # Lazily installs the optional pyrxing decoder on first use this
+        # Home Assistant run, HAOS included; never raises, never blocks
+        # setup -- see qr_decode.py's module docstring. Deliberately
+        # awaited here, right before building the form, not from
+        # async_setup/async_setup_entry.
+        qr_available = await async_ensure_qr_decoder(self.hass)
 
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -415,8 +420,10 @@ class SwitchSubentryFlow(config_entries.ConfigSubentryFlow):
                     ""
                     if qr_available
                     else "Photo upload is unavailable in this Home Assistant "
-                    "installation (the optional zxing-cpp library is not "
-                    "installed); use QR/label text or manual entry instead."
+                    "installation (the optional photo-QR decoder could not "
+                    "be installed automatically -- no matching wheel for "
+                    "this platform, or no network access); use QR/label "
+                    "text or manual entry instead."
                 )
             },
         )

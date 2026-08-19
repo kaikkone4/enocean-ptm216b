@@ -6,17 +6,20 @@ All key/address/name material in this file is synthetic test data.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from contextlib import contextmanager
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import voluptuous as vol
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.enocean_ptm216b.commissioning_input import (
+    MAX_QR_IMAGE_BYTES,
     _parse_manual_address,
     _parse_manual_key,
     _parse_qr_payload,
     resolve_commissioning_input,
+    resolve_commissioning_input_with_photo,
 )
 from custom_components.enocean_ptm216b.commissioning_store import CommissioningStore
 from custom_components.enocean_ptm216b.config_flow import (
@@ -192,6 +195,182 @@ def test_resolve_returns_none_none_when_nothing_parses():
 
     assert address is None
     assert key is None
+
+
+# ---------------------------------------------------------------------------
+# resolve_commissioning_input_with_photo: the uploaded-image decode path
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _fake_uploaded_file(path):
+    """Mirror process_uploaded_file's contract: yield a Path, no cleanup
+    needed here since these tests use pytest's own ``tmp_path``.
+    """
+    yield path
+
+
+def _qr_payload_text() -> str:
+    return f"30S{CANONICAL_ADDRESS}+Z{SYNTHETIC_KEY_HEX}"
+
+
+async def test_resolve_with_photo_decodes_and_takes_precedence_over_other_fields(
+    hass, tmp_path
+):
+    image_path = tmp_path / "label.png"
+    image_path.write_bytes(b"pyrxing is mocked below -- bytes are irrelevant")
+    user_input = {
+        "qr_image": "fake-file-id",
+        "qr_payload": f"30S{OTHER_ADDRESS.replace(':', '')}",
+        "address": OTHER_ADDRESS,
+        "security_key": OTHER_KEY_HEX,
+        "name": "Test",
+    }
+
+    with (
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.process_uploaded_file",
+            lambda hass, file_id: _fake_uploaded_file(image_path),
+        ),
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.is_qr_decode_available",
+            return_value=True,
+        ),
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.decode_qr_image_at_path",
+            return_value=_qr_payload_text(),
+        ) as mock_decode,
+    ):
+        address, key = await resolve_commissioning_input_with_photo(hass, user_input)
+
+    mock_decode.assert_called_once_with(str(image_path))
+    assert address == CANONICAL_ADDRESS
+    assert key == SYNTHETIC_KEY
+
+
+async def test_resolve_with_photo_rejects_an_oversized_file_without_decoding(
+    hass, tmp_path
+):
+    image_path = tmp_path / "label.png"
+    image_path.write_bytes(b"x" * (MAX_QR_IMAGE_BYTES + 1))
+    user_input = {
+        "qr_image": "fake-file-id",
+        "qr_payload": "",
+        "address": ADDRESS,
+        "security_key": SYNTHETIC_KEY_HEX,
+        "name": "Test",
+    }
+
+    with (
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.process_uploaded_file",
+            lambda hass, file_id: _fake_uploaded_file(image_path),
+        ),
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.is_qr_decode_available",
+            return_value=True,
+        ),
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.decode_qr_image_at_path",
+        ) as mock_decode,
+    ):
+        address, key = await resolve_commissioning_input_with_photo(hass, user_input)
+
+    mock_decode.assert_not_called()
+    # Falls back to the manual fields -- an oversized upload never blocks
+    # the rest of the form.
+    assert address == CANONICAL_ADDRESS
+    assert key == SYNTHETIC_KEY
+
+
+async def test_resolve_with_photo_skips_decode_when_backend_unavailable(hass, tmp_path):
+    image_path = tmp_path / "label.png"
+    image_path.write_bytes(b"irrelevant")
+    user_input = {
+        "qr_image": "fake-file-id",
+        "qr_payload": "",
+        "address": ADDRESS,
+        "security_key": SYNTHETIC_KEY_HEX,
+        "name": "Test",
+    }
+
+    with (
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.process_uploaded_file",
+            lambda hass, file_id: _fake_uploaded_file(image_path),
+        ),
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.is_qr_decode_available",
+            return_value=False,
+        ),
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.decode_qr_image_at_path",
+        ) as mock_decode,
+    ):
+        address, key = await resolve_commissioning_input_with_photo(hass, user_input)
+
+    mock_decode.assert_not_called()
+    assert address == CANONICAL_ADDRESS
+    assert key == SYNTHETIC_KEY
+
+
+async def test_resolve_with_photo_falls_back_when_upload_is_missing(hass):
+    user_input = {
+        "qr_image": "missing-file-id",
+        "qr_payload": "",
+        "address": ADDRESS,
+        "security_key": SYNTHETIC_KEY_HEX,
+        "name": "Test",
+    }
+
+    def _raise_missing(hass, file_id):
+        raise ValueError("File does not exist")
+
+    with (
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.process_uploaded_file",
+            _raise_missing,
+        ),
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.is_qr_decode_available",
+            return_value=True,
+        ),
+    ):
+        address, key = await resolve_commissioning_input_with_photo(hass, user_input)
+
+    assert address == CANONICAL_ADDRESS
+    assert key == SYNTHETIC_KEY
+
+
+async def test_resolve_with_photo_falls_back_when_decode_finds_no_text(hass, tmp_path):
+    image_path = tmp_path / "label.png"
+    image_path.write_bytes(b"no barcode here")
+    user_input = {
+        "qr_image": "fake-file-id",
+        "qr_payload": "",
+        "address": ADDRESS,
+        "security_key": SYNTHETIC_KEY_HEX,
+        "name": "Test",
+    }
+
+    with (
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.process_uploaded_file",
+            lambda hass, file_id: _fake_uploaded_file(image_path),
+        ),
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.is_qr_decode_available",
+            return_value=True,
+        ),
+        patch(
+            "custom_components.enocean_ptm216b.commissioning_input.decode_qr_image_at_path",
+            return_value=None,
+        ),
+    ):
+        address, key = await resolve_commissioning_input_with_photo(hass, user_input)
+
+    assert address == CANONICAL_ADDRESS
+    assert key == SYNTHETIC_KEY
 
 
 # ---------------------------------------------------------------------------
@@ -427,13 +606,17 @@ async def test_key_entry_detected_succeeds_when_address_matches(hass):
     assert switch.name == "Matched switch"
 
 
-async def test_key_entry_form_omits_qr_image_field_when_decoder_unavailable(hass):
+async def test_key_entry_form_omits_qr_image_field_when_ensure_returns_false(hass):
+    """ensure() returning False means the lazy pyrxing install genuinely
+    failed (no wheel for this platform, or no network) -- the photo field
+    must not appear, and the degradation note must explain why.
+    """
     entry = await _entry_without_designation(hass)
     flow = _subentry_flow_for(hass, entry)
 
     with patch(
-        "custom_components.enocean_ptm216b.config_flow.is_qr_decode_available",
-        return_value=False,
+        "custom_components.enocean_ptm216b.config_flow.async_ensure_qr_decoder",
+        AsyncMock(return_value=False),
     ):
         result = await flow.async_step_key_entry_manual(None)
 
@@ -441,13 +624,17 @@ async def test_key_entry_form_omits_qr_image_field_when_decoder_unavailable(hass
     assert result["description_placeholders"]["qr_status"] != ""
 
 
-async def test_key_entry_form_includes_qr_image_field_when_decoder_available(hass):
+async def test_key_entry_form_includes_qr_image_field_when_ensure_returns_true(hass):
+    """ensure() returning True means a decoder backend is usable (already
+    imported, or the lazy pyrxing install just succeeded) -- the photo
+    field must appear, with no degradation note.
+    """
     entry = await _entry_without_designation(hass)
     flow = _subentry_flow_for(hass, entry)
 
     with patch(
-        "custom_components.enocean_ptm216b.config_flow.is_qr_decode_available",
-        return_value=True,
+        "custom_components.enocean_ptm216b.config_flow.async_ensure_qr_decoder",
+        AsyncMock(return_value=True),
     ):
         result = await flow.async_step_key_entry_manual(None)
 

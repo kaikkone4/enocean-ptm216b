@@ -16,7 +16,7 @@ from homeassistant.components.file_upload import process_uploaded_file
 from homeassistant.core import HomeAssistant
 
 from .identity import canonicalize_address
-from .qr_decode import decode_qr_image, is_qr_decode_available
+from .qr_decode import decode_qr_image_at_path, is_qr_decode_available
 
 _KEY_HEX_LENGTH = 32
 _QR_ADDRESS_RE = re.compile(r"30S([0-9A-Fa-f]{12})", re.IGNORECASE)
@@ -105,20 +105,23 @@ def resolve_commissioning_input(
 def _decode_uploaded_qr_image(hass: HomeAssistant, file_id: str) -> str | None:
     """Read and decode one uploaded QR-photo file; must run in an executor.
 
-    Returns ``None`` (never raises) whenever the file is missing, too large,
-    or does not decode to any text -- every failure mode here is treated
-    identically, exactly like :func:`crypto.verify_telegram_mic` treats every
-    MIC failure identically. The temp file and any decoded text are
-    transient: nothing here is logged or persisted.
+    Decodes straight from the temp file's path (see
+    :func:`qr_decode.decode_qr_image_at_path`) while it still exists, inside
+    ``process_uploaded_file``'s own context -- no need to read the whole
+    file into memory first. Returns ``None`` (never raises) whenever the
+    file is missing, too large, or does not decode to any text -- every
+    failure mode here is treated identically, exactly like
+    :func:`crypto.verify_telegram_mic` treats every MIC failure identically.
+    The temp file and any decoded text are transient: nothing here is
+    logged or persisted.
     """
     try:
         with process_uploaded_file(hass, file_id) as path:
             if path.stat().st_size > MAX_QR_IMAGE_BYTES:
                 return None
-            image_bytes = path.read_bytes()
+            return decode_qr_image_at_path(str(path))
     except (ValueError, OSError):
         return None
-    return decode_qr_image(image_bytes)
 
 
 async def resolve_commissioning_input_with_photo(
