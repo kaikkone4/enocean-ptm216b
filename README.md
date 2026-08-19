@@ -246,10 +246,11 @@ switch**. The wizard has two parts:
    Choosing "Skip detection" goes straight to the next step, with no such
    cross-check — the form says so.
 2. **Key entry.** Provide the address and 16-byte security key one of three
-   ways: upload a photo of the module's QR code/label (only available when
-   the optional `zxing-cpp` decode library is installed — see below), paste
-   the QR/label text, or type the address and key manually. Give the switch
-   a name and choose whether it has one or two rocker button pairs. Submit.
+   ways: upload a photo of the module's QR code/label (self-installs its
+   decoder the first time this step opens — see below; if that install
+   fails, the photo field is hidden), paste the QR/label text, or type the
+   address and key manually. Give the switch a name and choose whether it
+   has one or two rocker button pairs. Submit.
 
 On success, the switch's device and event/diagnostic entities appear (or
 reappear) automatically — no separate reload step.
@@ -283,20 +284,35 @@ unaffected; nothing needs to be re-commissioned.
 
 ### QR-photo upload availability
 
-Photo upload uses the optional `zxing-cpp` library, which is **not** listed
-as a hard requirement of this integration (it has never published a
-musllinux wheel, so a hard requirement would break setup entirely on
-Home Assistant OS). If it is not installed, the photo-upload field simply
-does not appear in the wizard — QR/label text and manual entry still work
-exactly the same. On a glibc-based install (Home Assistant Container or
-Supervised on Debian, or a dev environment) you can enable it yourself:
+Photo-QR decoding self-installs the first time the Add-device wizard's
+key-entry step opens — including on Home Assistant OS. It uses
+[`pyrxing`](https://github.com/tanagumo/pyrxing), a dependency-free
+zxing-cpp-based reader that (unlike `zxing-cpp` itself) publishes wheels for
+musllinux (Home Assistant OS's platform) as well as manylinux, macOS, and
+Windows. Neither `pyrxing` nor `zxing-cpp` is listed as a hard requirement
+of this integration — a platform this integration hasn't been checked
+against, or an install with no outbound network access, must never fail
+integration setup over an optional convenience feature.
+
+The install happens lazily, at most once per Home Assistant start, right
+before the key-entry form renders — never at startup, so it can never delay
+or block anything else. If it succeeds, the photo field appears and stays
+available for the rest of that run. If it fails (no matching wheel for your
+platform/Python, or no network access), the photo field is simply hidden
+with an explanatory note — QR/label text and manual entry keep working
+exactly the same, and nothing is retried until Home Assistant restarts.
+
+Manually installing `zxing-cpp` yourself remains a supported alternative
+backend, e.g. on a glibc-based install (Home Assistant Container or
+Supervised on Debian, or a dev environment):
 
 ```bash
 pip install zxing-cpp
 ```
 
 into the same Python environment Home Assistant runs in, then restart Home
-Assistant.
+Assistant. If `zxing-cpp` is present it is used instead of the
+auto-installed `pyrxing`.
 
 ### What each commissioned switch exposes
 
