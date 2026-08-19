@@ -174,6 +174,17 @@ class Ptm216bRadioCensusSensor(SensorEntity):
     the result. Never exposes an address, device/local name, raw payload
     byte, RSSI, timestamp, or pseudonymous identifier -- only counts,
     lengths, manufacturer-ID/service-UUID keys, and booleans.
+
+    IMPORTANT for interpreting ``baseline_payload_changes``/
+    ``press_payload_changes`` (per entry) and the
+    ``enocean_..._press_payload_changes``/``casambi_..._press_payload_changes``
+    convenience fields below: these are counts of advertisement *payload
+    changes* this integration was handed, NOT counts of radio transmissions
+    -- Home Assistant's own Bluetooth stack silently deduplicates a
+    byte-identical repeat before it ever reaches this integration. See
+    radio_census.py's module docstring, "What the counts actually measure",
+    for the verified mechanism and why a zero result needs a positive
+    control (a known-working switch pressed once) before it means anything.
     """
 
     _attr_has_entity_name = True
@@ -207,13 +218,16 @@ class Ptm216bRadioCensusSensor(SensorEntity):
     def extra_state_attributes(self) -> dict[str, object]:
         """Return only the live phase total while running, or the full summary.
 
-        On ``complete``, entries are ranked by press-window count
-        descending and capped at :data:`_RADIO_CENSUS_DISPLAY_LIMIT` --
-        ``displayed_entries_truncated`` flags when the ranked list is
+        On ``complete``, entries are ranked by press-window payload-change
+        count descending and capped at :data:`_RADIO_CENSUS_DISPLAY_LIMIT`
+        -- ``displayed_entries_truncated`` flags when the ranked list is
         longer than what is shown. This is separate from
         ``truncated``, which reflects radio_census.py's own
         tracking-cap (whether every nearby manufacturer ID/service UUID
-        could even be tracked in the first place).
+        could even be tracked in the first place). See this class's own
+        docstring, and radio_census.py's module docstring, before reading
+        any of these numbers as a transmission count rather than a
+        payload-change count.
         """
         census = self._entry.runtime_data.radio_census
         if census is None:
@@ -229,7 +243,7 @@ class Ptm216bRadioCensusSensor(SensorEntity):
 
         ranked = sorted(
             summary.entries.items(),
-            key=lambda item: item[1].press_count,
+            key=lambda item: item[1].press_payload_changes,
             reverse=True,
         )
         displayed = ranked[:_RADIO_CENSUS_DISPLAY_LIMIT]
@@ -240,13 +254,13 @@ class Ptm216bRadioCensusSensor(SensorEntity):
             "entries": {key: asdict(value) for key, value in displayed},
             "truncated": summary.truncated,
             "displayed_entries_truncated": len(displayed) < len(ranked),
-            f"enocean_{enocean_key}_press_count": (
-                summary.entries[enocean_key].press_count
+            f"enocean_{enocean_key}_press_payload_changes": (
+                summary.entries[enocean_key].press_payload_changes
                 if enocean_key in summary.entries
                 else 0
             ),
-            f"casambi_{casambi_key}_press_count": (
-                summary.entries[casambi_key].press_count
+            f"casambi_{casambi_key}_press_payload_changes": (
+                summary.entries[casambi_key].press_payload_changes
                 if casambi_key in summary.entries
                 else 0
             ),
