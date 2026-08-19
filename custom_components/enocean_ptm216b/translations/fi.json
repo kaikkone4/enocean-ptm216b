@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EnOcean PTM 216B BLE",
+        "description": "Lisää passiivinen EnOcean PTM 216B BLE -havainnoija. Tämä luo yhden pelkästään havainnoivan integraation; paritusta, käyttöönottoa tai avainten syöttöä ei tapahdu tässä."
+      },
+      "reconfigure": {
+        "title": "Manuaalinen kaappaus",
+        "description": "Valitse rajattu, manuaalisesti käynnistettävä kaappaus. Asennus ja passiivinen havainnointi eivät koskaan käynnistä kumpaakaan itsestään.",
+        "menu_options": {
+          "designation_capture": "Kytkimen valinta (designation capture)",
+          "evidence_capture": "Rakennetodisteiden keruu (evidence capture)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Laite on jo määritetty",
+      "designation_capture_started": "Kytkimen valinta käynnistetty. Seuraa Designation capture -sensorin baseline-, press- ja confirmation-vaiheita.",
+      "evidence_capture_started": "Todisteiden keruu käynnistetty. Seuraa Evidence capture -sensoria 90 sekunnin keruuikkunan ajan.",
+      "no_designated_device": "Tässä istunnossa ei ole vielä valittua laitetta. Aja ensin kytkimen valinta ja käynnistä todisteiden keruu sen jälkeen uudelleen."
+    }
+  }
+}
