@@ -1,119 +1,75 @@
 """Configuration flow for the passive EnOcean PTM 216B observer.
 
-Commissioning (``async_step_commission_switch``) is the one deliberate,
-local, user-driven flow where an address and a device-specific security key
-are accepted at all -- see ``commissioning_store.py``'s module docstring for
-the exact storage boundary this flow feeds. Nothing entered here is ever
-echoed back into an error message, an abort reason, or a redisplayed form's
-description placeholders: on any failure the flow only names a typed reason,
-never the text the user typed.
+The per-switch **Add-device wizard** (:class:`SwitchSubentryFlow`, a config
+*subentry* flow -- see ``homeassistant.config_entries.ConfigSubentryFlow``)
+is the one deliberate, local, user-driven flow where an address and a
+device-specific security key are accepted at all -- see
+``commissioning_store.py``'s module docstring for the exact storage boundary
+this flow feeds. Nothing entered here is ever echoed back into an error
+message, an abort reason, or a redisplayed form's description placeholders:
+on any failure the flow only names a typed reason, never the text the user
+typed. Parsing helpers live in ``commissioning_input.py`` so both this
+wizard and (in the future) any other entry point can share them without
+duplicating the precedence rules.
 """
 
 from __future__ import annotations
 
-import re
+import asyncio
 from typing import Callable
 
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import selector
 from homeassistant.helpers.event import async_call_later
 
+from .commissioning_input import resolve_commissioning_input_with_photo
 from .const import DOMAIN
-from .identity import canonicalize_address
-from .runtime_data import Ptm216bRuntimeData
-
-_KEY_HEX_LENGTH = 32
-_QR_ADDRESS_RE = re.compile(r"30S([0-9A-Fa-f]{12})", re.IGNORECASE)
-_QR_KEY_RE = re.compile(r"Z([0-9A-Fa-f]{" + str(_KEY_HEX_LENGTH) + r"})", re.IGNORECASE)
-_KEY_HEX_RE = re.compile(r"^[0-9A-Fa-f]{" + str(_KEY_HEX_LENGTH) + r"}$")
-
-_COMMISSION_SCHEMA = vol.Schema(
-    {
-        vol.Optional("qr_payload", default=""): str,
-        vol.Optional("address", default=""): str,
-        vol.Optional("security_key", default=""): str,
-        vol.Required("name"): str,
-    }
+from .qr_decode import is_qr_decode_available
+from .runtime_data import (
+    DESIGNATION_BASELINE_SECONDS,
+    DESIGNATION_CAPTURE_SECONDS,
+    CaptureState,
+    DesignationOutcome,
+    Ptm216bRuntimeData,
 )
 
+_ROCKER_OPTIONS = [
+    selector.SelectOptionDict(value="1", label="1 (A0/A1 only)"),
+    selector.SelectOptionDict(value="2", label="2 (A0/A1/B0/B1)"),
+]
 
-def _parse_qr_payload(text: str) -> tuple[str | None, bytes | None]:
-    """Tolerantly extract (address, key) from EnOcean label/QR text.
-
-    Looks for the EnOcean label data-identifier tokens ``30S`` (followed by
-    12 hex digits: the address) and ``Z`` (followed by 32 hex digits: the
-    16-byte security key) anywhere in ``text``, case-insensitively. Tokens
-    may be separated by ``+``, whitespace, or nothing at all -- this
-    searches for each token independently rather than splitting on a fixed
-    separator, so any of those layouts work. Returns ``(None, None)``
-    components for whichever token is absent or does not parse; callers
-    must not merge a partial QR result with the manual fallback fields (see
-    :func:`_resolve_commissioning_input`).
-    """
-    address: str | None = None
-    address_match = _QR_ADDRESS_RE.search(text)
-    if address_match:
-        try:
-            address = canonicalize_address(address_match.group(1))
-        except ValueError:
-            address = None
-
-    key_match = _QR_KEY_RE.search(text)
-    key = bytes.fromhex(key_match.group(1)) if key_match else None
-
-    return address, key
+# Mirrors runtime_data.py's own phase durations exactly -- this wizard never
+# changes designation capture's timing, only polls it for display.
+_PHASE_DURATIONS: dict[CaptureState, float] = {
+    CaptureState.BASELINE: DESIGNATION_BASELINE_SECONDS,
+    CaptureState.PRESS: DESIGNATION_CAPTURE_SECONDS,
+    CaptureState.CONFIRMING: DESIGNATION_CAPTURE_SECONDS,
+}
 
 
-def _parse_manual_address(text: str) -> str | None:
-    """Accept colon-separated or plain 12-hex manual address entry."""
-    text = text.strip()
-    if not text:
-        return None
-    try:
-        return canonicalize_address(text)
-    except ValueError:
-        return None
-
-
-def _parse_manual_key(text: str) -> bytes | None:
-    """Accept a 32-hex-character (case-insensitive) manual security key."""
-    text = text.strip()
-    if not _KEY_HEX_RE.fullmatch(text):
-        return None
-    return bytes.fromhex(text)
-
-
-def _resolve_commissioning_input(
-    user_input: dict[str, object],
-) -> tuple[str | None, bytes | None]:
-    """Resolve one (canonical address, 16-byte key) pair from form input.
-
-    Precedence: if ``qr_payload`` parses to BOTH an address and a key, it
-    wins outright over the manual ``address``/``security_key`` fields --
-    partial results from the two sources are never merged. Only when the QR
-    payload is absent, or does not yield both fields, do the manual fields
-    apply.
-    """
-    qr_payload = str(user_input.get("qr_payload") or "").strip()
-    if qr_payload:
-        address, key = _parse_qr_payload(qr_payload)
-        if address is not None and key is not None:
-            return address, key
-
-    address = _parse_manual_address(str(user_input.get("address") or ""))
-    key = _parse_manual_key(str(user_input.get("security_key") or ""))
-    if address is not None and key is not None:
-        return address, key
-    return None, None
+def _key_entry_schema(*, qr_available: bool) -> vol.Schema:
+    """Build the key-entry form schema, omitting the photo field if unusable."""
+    fields: dict[vol.Marker, object] = {}
+    if qr_available:
+        fields[vol.Optional("qr_image")] = selector.FileSelector(
+            selector.FileSelectorConfig(accept="image/*")
+        )
+    fields[vol.Optional("qr_payload", default="")] = str
+    fields[vol.Optional("address", default="")] = str
+    fields[vol.Optional("security_key", default="")] = str
+    fields[vol.Required("name")] = str
+    fields[vol.Optional("rockers", default="2")] = selector.SelectSelector(
+        selector.SelectSelectorConfig(options=_ROCKER_OPTIONS)
+    )
+    return vol.Schema(fields)
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Create the single passive PTM 216B observer entry."""
 
-    VERSION = 1
+    VERSION = 2
 
     async def async_step_user(
         self, user_input: dict[str, object] | None = None
@@ -126,15 +82,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, object] | None = None
     ) -> FlowResult:
-        """Offer a manual menu between capture, commissioning, and removal."""
+        """Offer a manual menu between the two diagnostic capture tools.
+
+        Commissioning/decommissioning moved to the per-switch Add-device
+        wizard (config subentries, see :class:`SwitchSubentryFlow`) in
+        Phase 5A; this menu now only ever starts a bounded diagnostic
+        capture, never anything that touches a key or address.
+        """
         return self.async_show_menu(
             step_id="reconfigure",
-            menu_options=[
-                "designation_capture",
-                "evidence_capture",
-                "commission_switch",
-                "decommission_switch",
-            ],
+            menu_options=["designation_capture", "evidence_capture"],
         )
 
     async def async_step_designation_capture(
@@ -156,96 +113,193 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="no_designated_device")
         return self.async_abort(reason="evidence_capture_started")
 
-    async def async_step_commission_switch(
-        self, user_input: dict[str, object] | None = None
-    ) -> FlowResult:
-        """Trust one switch's address/key after cross-checking its designation.
+    def _schedule(self, delay: float, finish: Callable[[], None]) -> Callable[[], None]:
+        """Schedule a bounded-capture timer using Home Assistant's event loop."""
+        return async_call_later(self.hass, delay, lambda _now: finish())
 
-        Requires a designation from this runtime session (Phase 1.5) that
-        HMACs to the exact same address the user enters here -- this proves
-        the QR/manual entry belongs to the physical switch that was just
-        pressed, not a typo or someone else's label. See the module
-        docstring for why nothing entered here is ever echoed back.
-        """
-        entry = self._get_reconfigure_entry()
-        runtime: Ptm216bRuntimeData = entry.runtime_data
-        if runtime.designated_identifier is None:
-            return self.async_abort(reason="no_designated_device")
+    @classmethod
+    def async_get_supported_subentry_types(
+        cls, config_entry: config_entries.ConfigEntry
+    ) -> dict[str, type[config_entries.ConfigSubentryFlow]]:
+        """Register the per-switch Add-device wizard as a "switch" subentry."""
+        return {"switch": SwitchSubentryFlow}
 
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            address, key = _resolve_commissioning_input(user_input)
-            name = str(user_input.get("name", "")).strip()
-            if address is None or key is None or not name:
-                errors["base"] = "invalid_commissioning_data"
-            else:
-                candidate_identifier = runtime.compute_device_identifier(address)
-                if candidate_identifier != runtime.designated_identifier:
-                    return self.async_abort(reason="designation_mismatch")
-                store = runtime.commissioning_store
-                await store.async_add(address, key, name)
-                await self.hass.config_entries.async_reload(entry.entry_id)
-                return self.async_abort(reason="commissioning_complete")
 
-        return self.async_show_form(
-            step_id="commission_switch",
-            data_schema=_COMMISSION_SCHEMA,
-            errors=errors,
-        )
+class SwitchSubentryFlow(config_entries.ConfigSubentryFlow):
+    """Per-switch Add-device wizard: detect (optional) -> key entry -> done.
 
-    async def async_step_decommission_switch(
-        self, user_input: dict[str, object] | None = None
-    ) -> FlowResult:
-        """Remove one commissioned switch: its store record and its device.
+    Runs against the SAME :class:`~runtime_data.Ptm216bRuntimeData` instance
+    as the parent entry (via ``self._get_entry().runtime_data``), so the
+    detection step below drives the exact same
+    :meth:`~runtime_data.Ptm216bRuntimeData.start_designation_capture` the
+    diagnostic "Designation capture" reconfigure step already drives --
+    starting detection here cancels/replaces any other in-progress
+    designation exactly like that method's own docstring already documents.
+    That is intentional and shared runtime state, not a bug.
 
-        The selector's option ``value`` is the non-reversible device handle,
-        never the canonical address -- unlike a visible label, a selector's
-        ``value`` is still serialized to the frontend as part of the form
-        response, so the raw address must not appear there either. The
-        handle -> address mapping is recomputed fresh from the store at the
-        top of every call (both showing the form and handling its
-        submission), so the submitted handle can always be matched back to
-        its canonical address without persisting anything on the flow
-        instance between steps.
-        """
-        entry = self._get_reconfigure_entry()
-        runtime: Ptm216bRuntimeData = entry.runtime_data
-        store = runtime.commissioning_store
-        switches = store.switches if store is not None else {}
-        if not switches:
-            return self.async_abort(reason="no_commissioned_devices")
+    Subentry ``data`` holds ONLY non-secret fields (``handle``, ``name``,
+    ``rockers``) -- the 16-byte key, canonical address, and replay counter
+    stay in ``commissioning_store.py``, linked back to this subentry only by
+    ``handle`` (see ``identity.device_handle``).
+    """
 
-        handles_to_addresses = {
-            runtime.commissioned_device_handle(address): address for address in switches
-        }
-
-        if user_input is not None:
-            handle = str(user_input["switch"])
-            canonical_address = handles_to_addresses.get(handle)
-            if canonical_address is not None:
-                await store.async_remove(canonical_address)
-                registry = dr.async_get(self.hass)
-                device_entry = registry.async_get_device(identifiers={(DOMAIN, handle)})
-                if device_entry is not None:
-                    registry.async_remove_device(device_entry.id)
-                await self.hass.config_entries.async_reload(entry.entry_id)
-            return self.async_abort(reason="decommissioning_complete")
-
-        options = [
-            selector.SelectOptionDict(value=handle, label=switches[address].name)
-            for handle, address in handles_to_addresses.items()
-        ]
-        return self.async_show_form(
-            step_id="decommission_switch",
-            data_schema=vol.Schema(
-                {
-                    vol.Required("switch"): selector.SelectSelector(
-                        selector.SelectSelectorConfig(options=options)
-                    )
-                }
-            ),
-        )
+    def __init__(self) -> None:
+        self._detect_phase: CaptureState | None = None
+        self._detect_task: asyncio.Task | None = None
 
     def _schedule(self, delay: float, finish: Callable[[], None]) -> Callable[[], None]:
         """Schedule a bounded-capture timer using Home Assistant's event loop."""
         return async_call_later(self.hass, delay, lambda _now: finish())
+
+    async def async_step_user(
+        self, user_input: dict[str, object] | None = None
+    ) -> FlowResult:
+        """Offer detection (recommended) or a manual, undetected key entry."""
+        return self.async_show_menu(
+            step_id="user",
+            menu_options=["detect", "key_entry_manual"],
+        )
+
+    async def async_step_detect(
+        self, user_input: dict[str, object] | None = None
+    ) -> FlowResult:
+        """Drive bounded designation capture via live, auto-advancing progress.
+
+        Called repeatedly by the flow manager: once to start, then again
+        every time the ``progress_task`` below completes -- see
+        ``homeassistant.data_entry_flow.FlowManager._async_handle_step``.
+        Never requires a mid-detection click; each call just re-reads
+        ``runtime.capture_state``/``designation_outcome`` and either shows
+        the next phase's progress or moves on.
+        """
+        entry = self._get_entry()
+        runtime: Ptm216bRuntimeData = entry.runtime_data
+
+        if self._detect_task is None:
+            runtime.start_designation_capture(self._schedule)
+
+        state = runtime.capture_state
+        if state is CaptureState.INERT:
+            self._cancel_detect_task()
+            self._detect_phase = None
+            if runtime.designation_outcome is DesignationOutcome.SELECTED:
+                return await self.async_step_key_entry_detected()
+            return await self.async_step_detect_failed()
+
+        if self._detect_phase != state or self._detect_task is None:
+            self._cancel_detect_task()
+            self._detect_phase = state
+            # A short, self-contained wait mirroring this phase's real
+            # duration -- purely so the frontend polls and this step gets
+            # re-invoked; it does not drive the actual capture state
+            # machine, which advances on its own via `runtime`'s own timer.
+            self._detect_task = self.hass.async_create_task(
+                asyncio.sleep(_PHASE_DURATIONS[state])
+            )
+        elif self._detect_task.done():
+            # Our display-refresh task finished slightly before the real
+            # capture timer advanced `runtime.capture_state`; wait a short
+            # beat and re-check rather than showing a stale phase.
+            self._detect_task = self.hass.async_create_task(asyncio.sleep(0.1))
+
+        return self.async_show_progress(
+            progress_action=f"detect_{state.value}",
+            progress_task=self._detect_task,
+        )
+
+    def _cancel_detect_task(self) -> None:
+        """Cancel and drop this wizard's own display-refresh task, if any."""
+        if self._detect_task is not None and not self._detect_task.done():
+            self._detect_task.cancel()
+        self._detect_task = None
+
+    async def async_step_detect_failed(
+        self, user_input: dict[str, object] | None = None
+    ) -> FlowResult:
+        """Offer retry-detection or manual key entry after `no_selection`."""
+        return self.async_show_menu(
+            step_id="detect_failed",
+            menu_options=["detect", "key_entry_manual"],
+        )
+
+    def async_remove(self) -> None:
+        """Cancel a still-running detection if this flow is abandoned."""
+        self._cancel_detect_task()
+        entry = self.hass.config_entries.async_get_entry(self._entry_id)
+        if entry is None:
+            return
+        runtime: Ptm216bRuntimeData = entry.runtime_data
+        if runtime.capture_state is not CaptureState.INERT:
+            runtime.cancel_designation_capture()
+
+    async def async_step_key_entry_detected(
+        self, user_input: dict[str, object] | None = None
+    ) -> FlowResult:
+        """Key-entry step after a successful detection; cross-checks the address."""
+        return await self._async_step_key_entry(user_input, detected=True)
+
+    async def async_step_key_entry_manual(
+        self, user_input: dict[str, object] | None = None
+    ) -> FlowResult:
+        """Key-entry step without detection; no typo cross-check is possible."""
+        return await self._async_step_key_entry(user_input, detected=False)
+
+    async def _async_step_key_entry(
+        self, user_input: dict[str, object] | None, *, detected: bool
+    ) -> FlowResult:
+        step_id = "key_entry_detected" if detected else "key_entry_manual"
+        entry = self._get_entry()
+        runtime: Ptm216bRuntimeData = entry.runtime_data
+        qr_available = is_qr_decode_available()
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            address, key = await resolve_commissioning_input_with_photo(
+                self.hass, user_input
+            )
+            name = str(user_input.get("name", "")).strip()
+            rockers = int(str(user_input.get("rockers", "2")))
+            if address is None or key is None or not name:
+                errors["base"] = "invalid_commissioning_data"
+            elif runtime.commissioning_store.get(address) is not None:
+                # Adding a subentry with a unique_id (the handle) that
+                # already exists would otherwise raise inside the flow
+                # manager's finish-flow step -- fail closed with a normal
+                # form error instead of an unhandled exception.
+                errors["base"] = "switch_already_commissioned"
+            else:
+                if detected:
+                    candidate_identifier = runtime.compute_device_identifier(address)
+                    if candidate_identifier != runtime.designated_identifier:
+                        return self.async_abort(reason="designation_mismatch")
+
+                store = runtime.commissioning_store
+                await store.async_add(address, key, name)
+                handle = runtime.commissioned_device_handle(address)
+                # Returning CREATE_ENTRY, not calling async_add_subentry
+                # ourselves: ConfigSubentryFlowManager.async_finish_flow
+                # adds the subentry from this result automatically. The
+                # parent entry's update listener (see __init__.py's
+                # async_setup_entry) reacts to that subentry addition by
+                # reloading the entry so the new switch's entities appear --
+                # no explicit reload needed here.
+                return self.async_create_entry(
+                    title=name,
+                    data={"handle": handle, "name": name, "rockers": rockers},
+                    unique_id=handle,
+                )
+
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=_key_entry_schema(qr_available=qr_available),
+            errors=errors,
+            description_placeholders={
+                "qr_status": (
+                    ""
+                    if qr_available
+                    else "Photo upload is unavailable in this Home Assistant "
+                    "installation (the optional zxing-cpp library is not "
+                    "installed); use QR/label text or manual entry instead."
+                )
+            },
+        )
