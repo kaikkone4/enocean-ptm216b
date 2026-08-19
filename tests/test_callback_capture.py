@@ -83,3 +83,59 @@ async def test_callback_aggregates_only_pseudonymous_candidates_during_capture(
     assert identifier not in caplog.text
     assert repr(SECRET) not in caplog.text
     assert entry.data == {}
+
+
+@pytest.mark.asyncio
+async def test_callback_feeds_evidence_capture_for_the_designated_device(hass, caplog):
+    from custom_components.enocean_ptm216b.evidence_capture import (
+        ENOCEAN_MANUFACTURER_ID,
+        EvidenceState,
+    )
+
+    entry, advertisement_callback = await _setup_callback(hass)
+    caplog.set_level("DEBUG")
+    entry.runtime_data.designated_identifier = device_identifier(
+        entry.runtime_data._hmac_secret, ADDRESS
+    )
+    entry.runtime_data.start_evidence_capture(Mock(return_value=Mock()))
+    synthetic_value = b"\x01\x00\x00\x00\x10\x00\x00\x00\x00"
+    service_info = Mock(
+        address=ADDRESS,
+        manufacturer_data={ENOCEAN_MANUFACTURER_ID: synthetic_value},
+        connectable=False,
+    )
+
+    advertisement_callback(service_info, Mock())
+
+    assert entry.runtime_data.evidence_collector.state is EvidenceState.COLLECTING
+    assert entry.runtime_data.evidence_collector.callbacks_accepted == 1
+    assert ADDRESS not in caplog.text
+    assert synthetic_value.hex() not in caplog.text
+    assert ADDRESS not in repr(entry.runtime_data)
+    assert synthetic_value.hex() not in repr(entry.runtime_data)
+    entry.runtime_data.cancel_evidence_capture()
+
+
+@pytest.mark.asyncio
+async def test_callback_ignores_evidence_for_a_different_address(hass):
+    from custom_components.enocean_ptm216b.evidence_capture import (
+        ENOCEAN_MANUFACTURER_ID,
+    )
+
+    entry, advertisement_callback = await _setup_callback(hass)
+    entry.runtime_data.designated_identifier = device_identifier(
+        entry.runtime_data._hmac_secret, ADDRESS
+    )
+    entry.runtime_data.start_evidence_capture(Mock(return_value=Mock()))
+    other = Mock(
+        address=OTHER_ADDRESS,
+        manufacturer_data={
+            ENOCEAN_MANUFACTURER_ID: b"\x01\x00\x00\x00\x10\x00\x00\x00\x00"
+        },
+        connectable=False,
+    )
+
+    advertisement_callback(other, Mock())
+
+    assert entry.runtime_data.evidence_collector.callbacks_accepted == 0
+    entry.runtime_data.cancel_evidence_capture()

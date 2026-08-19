@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
+from .evidence_capture import EvidenceCollector, EvidenceScheduler, EvidenceState
 from .identity import device_identifier
 
 DESIGNATION_BASELINE_SECONDS = 10.0
@@ -59,9 +60,14 @@ class Ptm216bRuntimeData:
     capture_state_listener: CaptureStateListener | None = field(
         default=None, repr=False
     )
+    evidence_collector: EvidenceCollector | None = field(default=None, repr=False)
+    evidence_state_listener: CaptureStateListener | None = field(
+        default=None, repr=False
+    )
 
     def start_designation_capture(self, schedule: CaptureScheduler) -> None:
         """Start a bounded baseline only in response to a manual request."""
+        self.cancel_evidence_capture()
         cancel_timer = self.capture_timer
         if cancel_timer is not None:
             cancel_timer()
@@ -117,6 +123,26 @@ class Ptm216bRuntimeData:
         else:
             candidate.observation_count += 1
         self._notify_capture_state()
+
+    def record_advertisement_observation(
+        self,
+        address: str,
+        manufacturer_data: dict[int, bytes],
+        connectable: bool,
+    ) -> None:
+        """Feed one observed advertisement to designation and evidence capture.
+
+        Keeps designation-candidate recording unchanged and, exactly like
+        designation does, computes a transient HMAC identifier from the
+        address only to route the callback to the evidence collector. The
+        address itself and the identifier are never retained here.
+        """
+        self.record_designation_candidate(address)
+        try:
+            identifier = device_identifier(self._hmac_secret, address)
+        except ValueError:
+            return
+        self.record_evidence_callback(identifier, manufacturer_data, connectable)
 
     def _finish_designation_baseline(self) -> None:
         """Require a quiet baseline before arming the first press window."""
@@ -190,3 +216,49 @@ class Ptm216bRuntimeData:
         """Notify the privacy-safe diagnostic entity of aggregate changes."""
         if self.capture_state_listener is not None:
             self.capture_state_listener()
+
+    def start_evidence_capture(self, schedule: EvidenceScheduler) -> bool:
+        """Start bounded structural evidence capture for the designated switch.
+
+        Refuses as a no-op and returns ``False`` when no device has been
+        designated yet in this runtime session; the config flow maps that to
+        the ``no_designated_device`` abort reason. Starting evidence capture
+        cancels a running designation capture, mirroring the reverse case in
+        :meth:`start_designation_capture`.
+        """
+        if self.designated_identifier is None:
+            return False
+        if self.capture_state is not CaptureState.INERT:
+            self.cancel_designation_capture()
+        self.cancel_evidence_capture()
+        collector = EvidenceCollector(self.designated_identifier)
+        collector.start(schedule)
+        self.evidence_collector = collector
+        self._notify_evidence_state()
+        return True
+
+    def cancel_evidence_capture(self) -> None:
+        """Cancel the evidence window and discard all ephemeral evidence state."""
+        collector = self.evidence_collector
+        if collector is None:
+            return
+        collector.cancel()
+        self._notify_evidence_state()
+
+    def record_evidence_callback(
+        self,
+        identifier: str,
+        manufacturer_data: dict[int, bytes],
+        connectable: bool,
+    ) -> None:
+        """Feed one matching callback into the active evidence collector, if any."""
+        collector = self.evidence_collector
+        if collector is None or collector.state is not EvidenceState.COLLECTING:
+            return
+        collector.record_callback(identifier, manufacturer_data, connectable)
+        self._notify_evidence_state()
+
+    def _notify_evidence_state(self) -> None:
+        """Notify the privacy-safe evidence diagnostic entity of changes."""
+        if self.evidence_state_listener is not None:
+            self.evidence_state_listener()

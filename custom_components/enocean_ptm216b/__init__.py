@@ -28,7 +28,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ) -> None:
         """Observe matching advertisements without decoding or emitting actions yet."""
         entry.runtime_data.advertisement_count += 1
-        entry.runtime_data.record_designation_candidate(service_info.address)
+        entry.runtime_data.record_advertisement_observation(
+            service_info.address,
+            service_info.manufacturer_data,
+            service_info.connectable,
+        )
         sensor = getattr(entry.runtime_data, "sensor", None)
         if sensor is not None:
             sensor.async_write_ha_state()
@@ -50,4 +54,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
     if unload_ok:
         entry.runtime_data.cancel_designation_capture()
+        entry.runtime_data.cancel_evidence_capture()
     return unload_ok

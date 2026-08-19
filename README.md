@@ -61,6 +61,73 @@ Its exact privacy and radio limits are:
 6. After the confirmation window, verify `inert` and `selected`. Any baseline traffic, ambiguity, too few observations, or changed/rotating address must instead end as `no_selection`.
 7. Verify no address, payload, secret, full identifier, candidate map, or timing appears anywhere. Do not enter or upload commissioning material.
 
+## Telegram structure evidence capture (Phase 2)
+
+Structure evidence capture is available only from the integration's **Reconfigure**
+flow, and only after a device has already been designated (Phase 1.5). The
+Reconfigure flow now shows a menu with two deliberate choices: **Designation
+capture** (unchanged) and **Evidence capture**. Choosing evidence capture before
+any device is designated in this runtime session aborts with `no_designated_device`
+and starts nothing. Starting either flow cancels the other if it is currently
+running.
+
+Evidence capture inspects, in memory only, what Home Assistant's Bluetooth callback
+actually delivers for the already-designated switch during a single bounded
+90-second window. It never decodes a telegram, authenticates anything, verifies a
+signature, or emits a button action — see
+[docs/decoder-test-preparation.md](docs/decoder-test-preparation.md) for the exact
+evidence contract and abort rules this feature implements.
+
+The **Evidence capture** diagnostic sensor exposes only:
+
+- state: `inert`, `collecting`, `complete`, `no_data`, or `aborted`
+- while `collecting`: `callbacks_accepted` only
+- while `complete`: `callbacks_accepted`, `manufacturer_data_keys` (sorted list of
+  manufacturer-data map keys seen), `value_lengths` (sorted unique byte lengths),
+  `prefix_detected_consistent` (`true`/`false`/`"mixed"`), `le_deltas` and
+  `be_deltas` (sequence-counter deltas between consecutive callbacks — **never
+  absolute counter values**), `counter_monotonic_le` / `counter_monotonic_be`,
+  `status_xor_values` (each callback's switch-status byte XORed with the first
+  callback's — **never an absolute status byte**), `duplicate_identical_count`,
+  and `any_connectable_seen`
+- `inert`, `no_data`, and `aborted` expose no attributes beyond the state itself
+
+It never exposes a BLE address, a raw payload byte, an absolute sequence counter,
+an absolute switch-status value, a signature, a secret, or a full 64-character
+identifier — in entity state/attributes, logs, diagnostics, or config-entry data.
+
+### Capture abort rules
+
+The window fails closed and discards everything the moment any accepted
+manufacturer-data value under key `0x03DA` is 24 bytes or longer (a possible
+commissioning telegram carrying the device's security secret) or shorter than 9
+bytes (too short to contain a counter and switch-status byte). On abort the state
+becomes `aborted`, every raw byte and structural record collected so far is
+discarded immediately, and the sensor exposes nothing but that state. Reaching 64
+structural records ends the window early as `complete` instead of waiting the full
+90 seconds. Restart, unload, and cancelling either capture flow clear all evidence
+state.
+
+### Safe user-visible test
+
+1. Install this PR build, restart Home Assistant, and complete Phase 1.5
+   designation for your test switch first (see above). Evidence capture is
+   unavailable until a device is designated.
+2. Open the integration, choose **Reconfigure**, and pick **Evidence capture**
+   from the menu. Do not use Developer Tools → Actions; no capture action is
+   registered.
+3. During the 90-second `collecting` window, press each rocker button — A0, A1,
+   B0, and B1 — three times, press-and-release, with about two seconds between
+   presses.
+4. Wait for the window to end (`complete` or `no_data`) and inspect the **Evidence
+   capture** sensor's attributes.
+5. Verify no address, raw payload byte or hex, absolute counter, absolute switch
+   status, signature, secret, or full identifier appears anywhere. Do not enter or
+   upload commissioning material.
+
+The integration still emits no button events, services, or actions, and Bluetooth
+remains passive and non-connectable only throughout this capture.
+
 ## Test installation with HACS
 
 1. In Home Assistant, open **HACS → Integrations → ⋮ → Custom repositories**.

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .evidence_capture import EvidenceState
 
 
 async def async_setup_entry(
@@ -15,8 +19,9 @@ async def async_setup_entry(
     """Expose only an advertisement counter during the observation MVP."""
     advertisement_sensor = Ptm216bAdvertisementCounter(entry)
     capture_sensor = Ptm216bDesignationCaptureSensor(entry)
+    evidence_sensor = Ptm216bEvidenceCaptureSensor(entry)
     entry.runtime_data.sensor = advertisement_sensor
-    async_add_entities([advertisement_sensor, capture_sensor])
+    async_add_entities([advertisement_sensor, capture_sensor, evidence_sensor])
 
 
 class Ptm216bAdvertisementCounter(SensorEntity):
@@ -71,3 +76,53 @@ class Ptm216bDesignationCaptureSensor(SensorEntity):
             "observation_count": runtime.capture_observation_count,
             "designation_outcome": runtime.designation_outcome.value,
         }
+
+
+class Ptm216bEvidenceCaptureSensor(SensorEntity):
+    """Expose only structural telegram evidence, never raw bytes or identifiers.
+
+    See docs/decoder-test-preparation.md, "Exact evidence required before
+    parser code", for the structural facts this entity may expose. It never
+    exposes an address, raw payload byte, absolute counter, absolute switch
+    status, or full identifier.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Evidence capture"
+    _attr_icon = "mdi:magnify-scan"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_evidence_capture"
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to aggregate runtime changes after the entity is ready."""
+        await super().async_added_to_hass()
+        self._entry.runtime_data.evidence_state_listener = self.async_write_ha_state
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Remove the runtime listener without retaining the entity."""
+        self._entry.runtime_data.evidence_state_listener = None
+        await super().async_will_remove_from_hass()
+
+    @property
+    def native_value(self) -> str:
+        """Return the current bounded evidence-capture state, or inert."""
+        collector = self._entry.runtime_data.evidence_collector
+        if collector is None:
+            return EvidenceState.INERT.value
+        return collector.state.value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Return only the live count while collecting, or the full summary."""
+        collector = self._entry.runtime_data.evidence_collector
+        if collector is None:
+            return {}
+        if collector.state is EvidenceState.COLLECTING:
+            return {"callbacks_accepted": collector.callbacks_accepted}
+        if collector.state is EvidenceState.COMPLETE:
+            summary = collector.summary
+            return asdict(summary) if summary is not None else {}
+        return {}
