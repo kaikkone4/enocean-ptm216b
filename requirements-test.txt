@@ -1,4 +1,18 @@
-pytest-homeassistant-custom-component==0.13.214
+pytest-homeassistant-custom-component==0.13.260
 aiousbwatcher==1.1.1
 pyserial==3.5
 ruff==0.15.22
+# Constraint, not a feature dependency: homeassistant's own aiodns>=... has
+# no pycares upper bound, so a bare install resolves pycares==5.0.1, which
+# breaks aiodns==3.5.0's import (AttributeError: module 'pycares' has no
+# attribute 'ares_query_a_result') -- verified reproducible with both `uv
+# pip install` and plain `pip install` against this exact requirements
+# file, so it would break CI too, not just this dev machine. Pinning below
+# pycares 5 (which pulls 4.11.0 as of this writing) restores a working
+# import. Safe to remove once aiodns publishes a pycares-5-compatible release.
+pycares<5
+# Dev-only test dependency for one bonus real-decode QR test in
+# tests/test_qr_decode.py -- never a runtime requirement (see
+# custom_components/enocean_ptm216b/qr_decode.py's module docstring for why
+# zxing-cpp itself is deliberately NOT pinned here or in manifest.json).
+qrcode==8.2
