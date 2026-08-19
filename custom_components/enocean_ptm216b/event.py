@@ -20,21 +20,52 @@ on a ``rockers == 1`` switch still counts as verified (see
 ``runtime_data.CommissionedSwitchRuntime.record_verified_and_fire``) -- it
 just fires no event, because no listener is ever registered for that
 button here.
+
+As of Phase 5B, each raw verified telegram passes through
+``press_timing.PressTimingTracker`` (one per switch, owned by
+``runtime_data.CommissionedSwitchRuntime``) before reaching this entity, so
+``event_types`` now also includes the derived ``short_press``/
+``long_press`` actions -- see ``press_timing.py``'s module docstring for
+the hold-time state machine and its radio-loss safety rule.
+``async_setup_entry`` configures each switch's tracker threshold/scheduler
+once, from that switch's ``long_press_threshold_ms`` subentry field (see
+``config_flow.py``'s key-entry/reconfigure schemas).
 """
 
 from __future__ import annotations
 
+from typing import Callable
+
 from homeassistant.components.event import EventEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_DEVICE_ID
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN
+from .const import ATTR_ACTION, ATTR_BUTTON, DOMAIN, EVENT_ENOCEAN_PTM216B
+from .press_timing import DEFAULT_LONG_PRESS_THRESHOLD_MS, PressAction
 from .telegram import Button
 
-_EVENT_TYPES = ["press", "release"]
+_EVENT_TYPES = [action.value for action in PressAction]
 _SINGLE_ROCKER_BUTTONS = (Button.A0, Button.A1)
+
+
+def _make_scheduler(
+    hass: HomeAssistant,
+) -> Callable[[float, Callable[[], None]], Callable[[], None]]:
+    """Return a press_timing.PressScheduler backed by Home Assistant's event loop.
+
+    Mirrors ``config_flow.py``'s own ``_schedule`` helper exactly -- the
+    same ``async_call_later``-based convention every bounded timer in this
+    integration uses.
+    """
+
+    def _schedule(delay: float, finish: Callable[[], None]) -> Callable[[], None]:
+        return async_call_later(hass, delay, lambda _now: finish())
+
+    return _schedule
 
 
 async def async_setup_entry(
@@ -62,6 +93,13 @@ async def async_setup_entry(
             if subentry.data.get("rockers") == 1
             else tuple(Button)
         )
+        switch_runtime = entry.runtime_data.commissioned_switch_runtime(
+            canonical_address
+        )
+        switch_runtime.press_tracker.threshold_ms = subentry.data.get(
+            "long_press_threshold_ms", DEFAULT_LONG_PRESS_THRESHOLD_MS
+        )
+        switch_runtime.press_tracker.scheduler = _make_scheduler(hass)
         entities = [
             Ptm216bButtonEventEntity(entry, canonical_address, switch.name, button)
             for button in buttons
@@ -83,6 +121,16 @@ class Ptm216bButtonEventEntity(EventEntity):
     NOT call ``async_write_ha_state()`` itself, so
     :meth:`_handle_button_event` calls it explicitly right after triggering
     -- otherwise the state/event would never actually become observable.
+
+    As of Phase 5B, :meth:`_handle_button_event` also fires
+    ``const.EVENT_ENOCEAN_PTM216B`` on the event bus, carrying only
+    ``{device_id, button, action}`` -- ``device_trigger.py`` filters on
+    exactly this bus event to offer this button's short_press/long_press/
+    press/release as device triggers in the automation editor. Fired only
+    once this entity has a ``device_entry`` (i.e. once it has actually gone
+    through entity-platform registration) -- a bare, unregistered instance
+    (as constructed directly in unit tests) safely skips the bus fire and
+    still triggers/writes state exactly as before.
     """
 
     _attr_has_entity_name = True
@@ -120,7 +168,16 @@ class Ptm216bButtonEventEntity(EventEntity):
         switch_runtime.set_event_listener(self._button, None)
         await super().async_will_remove_from_hass()
 
-    def _handle_button_event(self, is_press: bool) -> None:
-        """Trigger this button's event and immediately write the new state."""
-        self._trigger_event("press" if is_press else "release")
+    def _handle_button_event(self, action: PressAction) -> None:
+        """Trigger this button's event, write state, and fire the trigger bus event."""
+        self._trigger_event(action.value)
         self.async_write_ha_state()
+        if self.hass is not None and self.device_entry is not None:
+            self.hass.bus.async_fire(
+                EVENT_ENOCEAN_PTM216B,
+                {
+                    ATTR_DEVICE_ID: self.device_entry.id,
+                    ATTR_BUTTON: self._button.value,
+                    ATTR_ACTION: action.value,
+                },
+            )

@@ -170,4 +170,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         entry.runtime_data.cancel_designation_capture()
         entry.runtime_data.cancel_evidence_capture()
+        entry.runtime_data.clear_press_timers()
     return unload_ok

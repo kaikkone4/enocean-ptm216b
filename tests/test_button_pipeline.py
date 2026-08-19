@@ -16,6 +16,7 @@ from custom_components.enocean_ptm216b import button_pipeline
 from custom_components.enocean_ptm216b.commissioning_store import CommissioningStore
 from custom_components.enocean_ptm216b.const import ENOCEAN_MANUFACTURER_ID
 from custom_components.enocean_ptm216b.identity import canonicalize_address
+from custom_components.enocean_ptm216b.press_timing import PressAction
 from custom_components.enocean_ptm216b.runtime_data import Ptm216bRuntimeData
 from custom_components.enocean_ptm216b.telegram import Button
 
@@ -92,7 +93,7 @@ async def test_unparseable_address_is_a_complete_no_op(hass):
 async def test_first_trust_initializes_counter_without_verified_or_rejected(hass):
     runtime, store = await _make_runtime(hass)
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
-    events: list[bool] = []
+    events: list[PressAction] = []
     switch_runtime.set_event_listener(Button.A0, events.append)
     calls: list = []
 
@@ -132,11 +133,11 @@ async def test_accepted_telegram_fires_event_only_after_store_save_completes(has
     store.async_save = tracked_save
 
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
-    events: list[bool] = []
+    events: list[PressAction] = []
 
-    def _listener(is_press: bool) -> None:
+    def _listener(action: PressAction) -> None:
         call_order.append("event_fired")
-        events.append(is_press)
+        events.append(action)
 
     switch_runtime.set_event_listener(Button.A0, _listener)
 
@@ -147,7 +148,7 @@ async def test_accepted_telegram_fires_event_only_after_store_save_completes(has
     await calls[0]
 
     assert call_order == ["saved", "event_fired"]
-    assert events == [True]
+    assert events == [PressAction.PRESS]
     assert switch_runtime.verified_count == 1
     assert switch_runtime.rejected_count == 0
     assert store.get_counter(CANONICAL_ADDRESS) == 6
@@ -158,7 +159,7 @@ async def test_accepted_release_maps_to_is_press_false(hass):
     store.set_counter(CANONICAL_ADDRESS, 5)
     await store.async_save()
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
-    events: list[bool] = []
+    events: list[PressAction] = []
     switch_runtime.set_event_listener(Button.A0, events.append)
 
     calls: list = []
@@ -167,7 +168,10 @@ async def test_accepted_release_maps_to_is_press_false(hass):
     )
     await calls[0]
 
-    assert events == [False]
+    # A bare release with no preceding open press (see press_timing.py's
+    # radio-loss-safety rule) emits only the raw release -- never a
+    # short_press.
+    assert events == [PressAction.RELEASE]
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +184,7 @@ async def test_duplicate_counter_is_rejected_and_fires_no_event(hass):
     store.set_counter(CANONICAL_ADDRESS, 5)
     await store.async_save()
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
-    events: list[bool] = []
+    events: list[PressAction] = []
     switch_runtime.set_event_listener(Button.A0, events.append)
 
     calls: list = []
@@ -200,7 +204,7 @@ async def test_replay_rejected_counter_is_rejected_and_fires_no_event(hass):
     store.set_counter(CANONICAL_ADDRESS, 5)
     await store.async_save()
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
-    events: list[bool] = []
+    events: list[PressAction] = []
     switch_runtime.set_event_listener(Button.A0, events.append)
 
     calls: list = []
@@ -276,7 +280,7 @@ async def test_status_reject_still_advances_counter_but_fires_no_event(hass):
     store.set_counter(CANONICAL_ADDRESS, 5)
     await store.async_save()
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
-    events: list[bool] = []
+    events: list[PressAction] = []
     switch_runtime.set_event_listener(Button.A0, events.append)
 
     calls: list = []
@@ -306,7 +310,7 @@ async def test_concurrent_same_counter_callbacks_serialize_to_one_accept(hass):
     store.set_counter(CANONICAL_ADDRESS, 5)
     await store.async_save()
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
-    events: list[bool] = []
+    events: list[PressAction] = []
     switch_runtime.set_event_listener(Button.A0, events.append)
 
     calls: list = []
@@ -322,7 +326,7 @@ async def test_concurrent_same_counter_callbacks_serialize_to_one_accept(hass):
 
     assert switch_runtime.verified_count == 1
     assert switch_runtime.rejected_count == 1
-    assert events == [True]
+    assert events == [PressAction.PRESS]
     assert store.get_counter(CANONICAL_ADDRESS) == 6
 
 

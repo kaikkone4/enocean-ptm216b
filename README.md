@@ -301,8 +301,10 @@ Assistant.
 ### What each commissioned switch exposes
 
 - One **event** entity per rocker button (A0, A1, and, for two-rocker
-  switches, B0, B1), each firing `press` or `release`. Only the one entity
-  matching the decoded button fires per accepted telegram.
+  switches, B0, B1), each firing `press`, `release`, and, as of Phase 5B,
+  the derived `short_press`/`long_press` -- see "Short/long press and
+  device triggers" below. Only the one entity matching the decoded button
+  fires per accepted telegram.
 - **Verified telegrams** (diagnostic sensor): counts only telegrams that
   passed every gate above (shape, MIC, counter, and, for a button this
   switch has an event entity for, status). Does not include first-trust
@@ -349,6 +351,74 @@ private commissioning store.
    non-reversible device handle are visible.
 9. Optionally, delete the switch's subentry from the device page and
    confirm its device and entities disappear.
+
+## Short/long press and device triggers (Phase 5B)
+
+Every commissioned button now exposes four events instead of two: the
+existing raw **`press`** (fires the instant a verified press is decoded)
+and **`release`** (fires the instant a verified release is decoded),
+plus two new derived ones:
+
+- **`short_press`**: the button was released before the long-press
+  threshold elapsed. Fires just before `release`, on the same release
+  telegram.
+- **`long_press`**: the button is *still held down* when the threshold
+  elapses -- this fires immediately at that moment, **not** when the
+  button is eventually released. This is a deliberate hold-time design:
+  it lets a "dim while held" or "stop at target brightness" automation
+  react the instant a long press is recognized, rather than only after
+  the finger lifts.
+
+Releasing a button that already fired `long_press` produces only
+`release` -- never a `short_press` on top of it.
+
+### Configuring the threshold
+
+Each switch has its own **long-press threshold**, in milliseconds
+(default 500, adjustable between 200 and 5000). Set it in the Add-device
+wizard's key-entry step, or change it later -- without recommissioning,
+address, or key re-entry -- from the switch's subentry **Reconfigure**
+option on the device page, where its name and rocker count are also
+editable.
+
+### Radio-loss behavior
+
+PTM 216B releases are the telegram most likely to be lost over the air
+(see [docs/evidence-findings.md](docs/evidence-findings.md)). If a
+press's release never arrives, the next verified press for that same
+button silently resets its pending state first -- no spurious
+`short_press`, no duplicate `long_press`, nothing retroactive. The only
+practical effect of a lost release is that the orphaned press's own
+short/long resolution is simply abandoned; the next real press/release
+pair behaves normally.
+
+### Automating from the device page
+
+Every commissioned button's `press`, `release`, `short_press`, and
+`long_press` are also offered directly as **device triggers** in the
+automation editor -- pick the integration's device, then the button and
+action, with no need to know about event entities. A one-rocker switch
+offers triggers only for A0/A1, matching its actual event entities. The
+underlying event entities (`event.<switch>_a0`, etc.) are unchanged and
+still usable directly for anyone who prefers them.
+
+### Safe user-visible test
+
+1. On an already-commissioned switch, press and quickly release one
+   button (well under half a second). Confirm only `press` then
+   `short_press` then `release` fire, in that order -- no `long_press`.
+2. Press and hold the same button past the threshold, still holding it.
+   Confirm `long_press` fires *while still holding*, without waiting for
+   release.
+3. Release it. Confirm only `release` fires -- no second `short_press`.
+4. From **Settings → Automations → Create automation → Add trigger →
+   Device**, pick this switch's device, then a button and a
+   `short_press`/`long_press`/`press`/`release` trigger, and confirm it
+   is offered and fires correctly end-to-end.
+5. Open the switch's subentry **Reconfigure**, lower the threshold, save,
+   and repeat step 2 with a shorter hold -- confirm `long_press` now
+   fires sooner, with no recommissioning prompt and no address/key field
+   shown.
 
 ## Test installation with HACS
 

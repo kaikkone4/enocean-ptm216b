@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+import voluptuous as vol
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.enocean_ptm216b.commissioning_input import (
@@ -17,11 +19,20 @@ from custom_components.enocean_ptm216b.commissioning_input import (
     resolve_commissioning_input,
 )
 from custom_components.enocean_ptm216b.commissioning_store import CommissioningStore
-from custom_components.enocean_ptm216b.config_flow import SwitchSubentryFlow
+from custom_components.enocean_ptm216b.config_flow import (
+    SwitchSubentryFlow,
+    _key_entry_schema,
+    _reconfigure_schema,
+)
 from custom_components.enocean_ptm216b.const import DOMAIN
 from custom_components.enocean_ptm216b.identity import (
     canonicalize_address,
     device_identifier,
+)
+from custom_components.enocean_ptm216b.press_timing import (
+    DEFAULT_LONG_PRESS_THRESHOLD_MS,
+    MAX_LONG_PRESS_THRESHOLD_MS,
+    MIN_LONG_PRESS_THRESHOLD_MS,
 )
 from custom_components.enocean_ptm216b.runtime_data import (
     CaptureState,
@@ -283,6 +294,7 @@ async def test_key_entry_manual_succeeds_via_manual_fields(hass):
         "handle": handle,
         "name": "Living room switch",
         "rockers": 2,
+        "long_press_threshold_ms": DEFAULT_LONG_PRESS_THRESHOLD_MS,
     }
     assert result["unique_id"] == handle
     switch = entry.runtime_data.commissioning_store.get(CANONICAL_ADDRESS)
@@ -290,6 +302,25 @@ async def test_key_entry_manual_succeeds_via_manual_fields(hass):
     assert switch.key == SYNTHETIC_KEY
     assert switch.name == "Living room switch"
     assert switch.counter is None
+
+
+async def test_key_entry_manual_persists_a_custom_long_press_threshold(hass):
+    entry = await _entry_without_designation(hass)
+    flow = _subentry_flow_for(hass, entry)
+
+    result = await flow.async_step_key_entry_manual(
+        {
+            "qr_payload": "",
+            "address": ADDRESS,
+            "security_key": SYNTHETIC_KEY_HEX,
+            "name": "Custom threshold switch",
+            "rockers": "2",
+            "long_press_threshold_ms": 1200,
+        }
+    )
+
+    assert result["type"] == "create_entry"
+    assert result["data"]["long_press_threshold_ms"] == 1200
 
 
 async def test_key_entry_manual_succeeds_via_qr_payload(hass):
@@ -594,3 +625,212 @@ async def test_detect_failed_progress_transition_survives_the_real_flow_manager(
     assert final_result["type"] == "menu"
     assert final_result["step_id"] == "detect_failed"
     assert set(final_result["menu_options"]) == {"detect", "key_entry_manual"}
+
+
+# ---------------------------------------------------------------------------
+# Long-press-threshold schema bounds (both the Add-device wizard and
+# reconfigure share the same NumberSelector construction)
+# ---------------------------------------------------------------------------
+
+
+def test_key_entry_schema_rejects_threshold_above_the_max_bound():
+    schema = _key_entry_schema(qr_available=False)
+
+    with pytest.raises(vol.Invalid):
+        schema(
+            {
+                "name": "X",
+                "address": ADDRESS,
+                "security_key": SYNTHETIC_KEY_HEX,
+                "long_press_threshold_ms": MAX_LONG_PRESS_THRESHOLD_MS + 1,
+            }
+        )
+
+
+def test_key_entry_schema_rejects_threshold_below_the_min_bound():
+    schema = _key_entry_schema(qr_available=False)
+
+    with pytest.raises(vol.Invalid):
+        schema(
+            {
+                "name": "X",
+                "address": ADDRESS,
+                "security_key": SYNTHETIC_KEY_HEX,
+                "long_press_threshold_ms": MIN_LONG_PRESS_THRESHOLD_MS - 1,
+            }
+        )
+
+
+def test_key_entry_schema_accepts_threshold_within_bounds_and_defaults_it():
+    schema = _key_entry_schema(qr_available=False)
+
+    result = schema(
+        {"name": "X", "address": ADDRESS, "security_key": SYNTHETIC_KEY_HEX}
+    )
+
+    assert result["long_press_threshold_ms"] == DEFAULT_LONG_PRESS_THRESHOLD_MS
+
+
+def test_reconfigure_schema_rejects_threshold_outside_bounds():
+    schema = _reconfigure_schema()
+
+    with pytest.raises(vol.Invalid):
+        schema(
+            {"name": "X", "long_press_threshold_ms": MAX_LONG_PRESS_THRESHOLD_MS + 1}
+        )
+    with pytest.raises(vol.Invalid):
+        schema(
+            {"name": "X", "long_press_threshold_ms": MIN_LONG_PRESS_THRESHOLD_MS - 1}
+        )
+
+
+# ---------------------------------------------------------------------------
+# SwitchSubentryFlow: reconfigure (Phase 5B) -- edit name/rockers/threshold
+# without recommissioning
+# ---------------------------------------------------------------------------
+
+
+async def _entry_with_commissioned_switch(
+    hass,
+    *,
+    name: str = "Living room switch",
+    rockers: int = 2,
+    threshold_ms: int | None = DEFAULT_LONG_PRESS_THRESHOLD_MS,
+) -> tuple[MockConfigEntry, str]:
+    """Build an entry with a store record and a matching "switch" subentry.
+
+    ``threshold_ms=None`` omits the field entirely from subentry data,
+    mirroring a switch commissioned before Phase 5B.
+    """
+    store = CommissioningStore(hass)
+    await store.async_load()
+    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, name)
+    runtime = Ptm216bRuntimeData(_hmac_secret=SECRET, commissioning_store=store)
+    handle = runtime.commissioned_device_handle(CANONICAL_ADDRESS)
+
+    subentry_data = {"handle": handle, "name": name, "rockers": rockers}
+    if threshold_ms is not None:
+        subentry_data["long_press_threshold_ms"] = threshold_ms
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={},
+        version=2,
+        subentries_data=[
+            {
+                "data": subentry_data,
+                "subentry_type": "switch",
+                "title": name,
+                "unique_id": handle,
+            }
+        ],
+    )
+    entry.runtime_data = runtime
+    entry.add_to_hass(hass)
+    (subentry_id,) = entry.subentries
+    return entry, subentry_id
+
+
+def _reconfigure_flow_for(
+    hass, entry: MockConfigEntry, subentry_id: str
+) -> SwitchSubentryFlow:
+    """Mirror ``_subentry_flow_for`` above, but for a reconfigure flow."""
+    flow = SwitchSubentryFlow()
+    flow.hass = hass
+    flow.handler = (entry.entry_id, "switch")
+    flow.flow_id = "test-subentry-reconfigure-flow-id"
+    flow.context = {"source": "reconfigure", "subentry_id": subentry_id}
+    return flow
+
+
+async def test_reconfigure_shows_a_form_with_no_address_or_key_field(hass):
+    entry, subentry_id = await _entry_with_commissioned_switch(hass)
+    flow = _reconfigure_flow_for(hass, entry, subentry_id)
+
+    result = await flow.async_step_reconfigure(None)
+
+    assert result["type"] == "form"
+    assert result["step_id"] == "reconfigure"
+    for forbidden in ("qr_image", "qr_payload", "address", "security_key"):
+        assert forbidden not in result["data_schema"].schema
+    for expected in ("name", "rockers", "long_press_threshold_ms"):
+        assert expected in result["data_schema"].schema
+
+
+async def test_reconfigure_updates_name_rockers_and_threshold(hass):
+    entry, subentry_id = await _entry_with_commissioned_switch(
+        hass, name="Old name", rockers=2, threshold_ms=500
+    )
+    flow = _reconfigure_flow_for(hass, entry, subentry_id)
+
+    result = await flow.async_step_reconfigure(
+        {"name": "New name", "rockers": "1", "long_press_threshold_ms": 800}
+    )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "reconfigure_successful"
+    subentry = entry.subentries[subentry_id]
+    assert subentry.title == "New name"
+    assert subentry.data["name"] == "New name"
+    assert subentry.data["rockers"] == 1
+    assert subentry.data["long_press_threshold_ms"] == 800
+    # The handle -- and therefore the device/store linkage -- is preserved.
+    assert subentry.data["handle"] == entry.runtime_data.commissioned_device_handle(
+        CANONICAL_ADDRESS
+    )
+
+
+async def test_reconfigure_never_touches_the_commissioning_store_key_or_address(hass):
+    entry, subentry_id = await _entry_with_commissioned_switch(hass)
+    flow = _reconfigure_flow_for(hass, entry, subentry_id)
+    before = entry.runtime_data.commissioning_store.get(CANONICAL_ADDRESS)
+
+    await flow.async_step_reconfigure(
+        {"name": "Renamed only", "rockers": "2", "long_press_threshold_ms": 900}
+    )
+
+    after = entry.runtime_data.commissioning_store.get(CANONICAL_ADDRESS)
+    assert after.key == before.key
+    assert after.counter == before.counter
+
+
+async def test_reconfigure_rejects_empty_name(hass):
+    entry, subentry_id = await _entry_with_commissioned_switch(hass)
+    flow = _reconfigure_flow_for(hass, entry, subentry_id)
+
+    result = await flow.async_step_reconfigure(
+        {"name": "   ", "rockers": "2", "long_press_threshold_ms": 500}
+    )
+
+    assert result["type"] == "form"
+    assert result["errors"] == {"base": "invalid_commissioning_data"}
+    # Unchanged: the original subentry data is untouched by a rejected edit.
+    assert entry.subentries[subentry_id].data["name"] == "Living room switch"
+
+
+async def test_reconfigure_missing_threshold_in_submission_falls_back_to_default(hass):
+    entry, subentry_id = await _entry_with_commissioned_switch(hass)
+    flow = _reconfigure_flow_for(hass, entry, subentry_id)
+
+    result = await flow.async_step_reconfigure({"name": "Renamed", "rockers": "2"})
+
+    assert result["type"] == "abort"
+    assert (
+        entry.subentries[subentry_id].data["long_press_threshold_ms"]
+        == DEFAULT_LONG_PRESS_THRESHOLD_MS
+    )
+
+
+async def test_reconfigure_form_defaults_threshold_for_a_pre_5b_subentry(hass):
+    """A switch commissioned before Phase 5B has no ``long_press_threshold_ms``
+    in its subentry data at all; the reconfigure form must still show/accept
+    one, suggested from the default (see ``add_suggested_values_to_schema``).
+    """
+    entry, subentry_id = await _entry_with_commissioned_switch(hass, threshold_ms=None)
+    assert "long_press_threshold_ms" not in entry.subentries[subentry_id].data
+    flow = _reconfigure_flow_for(hass, entry, subentry_id)
+
+    result = await flow.async_step_reconfigure(None)
+
+    assert result["type"] == "form"
+    assert "long_press_threshold_ms" in result["data_schema"].schema
