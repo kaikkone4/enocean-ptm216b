@@ -26,6 +26,11 @@ from homeassistant.helpers.event import async_call_later
 
 from .commissioning_input import resolve_commissioning_input_with_photo
 from .const import DOMAIN
+from .press_timing import (
+    DEFAULT_LONG_PRESS_THRESHOLD_MS,
+    MAX_LONG_PRESS_THRESHOLD_MS,
+    MIN_LONG_PRESS_THRESHOLD_MS,
+)
 from .qr_decode import is_qr_decode_available
 from .runtime_data import (
     DESIGNATION_BASELINE_SECONDS,
@@ -39,6 +44,24 @@ _ROCKER_OPTIONS = [
     selector.SelectOptionDict(value="1", label="1 (A0/A1 only)"),
     selector.SelectOptionDict(value="2", label="2 (A0/A1/B0/B1)"),
 ]
+
+
+def _long_press_threshold_selector() -> selector.NumberSelector:
+    """Build the shared long-press-threshold field: sane bounds, enforced by
+    the flow manager's own schema validation (a value outside
+    [MIN_LONG_PRESS_THRESHOLD_MS, MAX_LONG_PRESS_THRESHOLD_MS] redisplays
+    the form with a field error, never silently clamped).
+    """
+    return selector.NumberSelector(
+        selector.NumberSelectorConfig(
+            min=MIN_LONG_PRESS_THRESHOLD_MS,
+            max=MAX_LONG_PRESS_THRESHOLD_MS,
+            step=50,
+            mode=selector.NumberSelectorMode.BOX,
+            unit_of_measurement="ms",
+        )
+    )
+
 
 # Mirrors runtime_data.py's own phase durations exactly -- this wizard never
 # changes designation capture's timing, only polls it for display.
@@ -63,7 +86,31 @@ def _key_entry_schema(*, qr_available: bool) -> vol.Schema:
     fields[vol.Optional("rockers", default="2")] = selector.SelectSelector(
         selector.SelectSelectorConfig(options=_ROCKER_OPTIONS)
     )
+    fields[
+        vol.Optional("long_press_threshold_ms", default=DEFAULT_LONG_PRESS_THRESHOLD_MS)
+    ] = _long_press_threshold_selector()
     return vol.Schema(fields)
+
+
+def _reconfigure_schema() -> vol.Schema:
+    """Build the reconfigure form schema: name/rockers/threshold only.
+
+    Deliberately has no ``qr_image``/``qr_payload``/``address``/
+    ``security_key`` field -- reconfigure never touches a switch's
+    commissioned identity (see ``commissioning_store.py``'s key/address
+    boundary), only its editable non-secret subentry fields.
+    """
+    return vol.Schema(
+        {
+            vol.Required("name"): str,
+            vol.Optional("rockers", default="2"): selector.SelectSelector(
+                selector.SelectSelectorConfig(options=_ROCKER_OPTIONS)
+            ),
+            vol.Optional(
+                "long_press_threshold_ms", default=DEFAULT_LONG_PRESS_THRESHOLD_MS
+            ): _long_press_threshold_selector(),
+        }
+    )
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -138,9 +185,12 @@ class SwitchSubentryFlow(config_entries.ConfigSubentryFlow):
     That is intentional and shared runtime state, not a bug.
 
     Subentry ``data`` holds ONLY non-secret fields (``handle``, ``name``,
-    ``rockers``) -- the 16-byte key, canonical address, and replay counter
-    stay in ``commissioning_store.py``, linked back to this subentry only by
-    ``handle`` (see ``identity.device_handle``).
+    ``rockers``, ``long_press_threshold_ms``) -- the 16-byte key, canonical
+    address, and replay counter stay in ``commissioning_store.py``, linked
+    back to this subentry only by ``handle`` (see ``identity.device_handle``).
+
+    :meth:`async_step_reconfigure` (Phase 5B) lets name/rockers/threshold be
+    edited later without recommissioning -- see its own docstring.
     """
 
     def __init__(self) -> None:
@@ -240,6 +290,55 @@ class SwitchSubentryFlow(config_entries.ConfigSubentryFlow):
         if runtime.capture_state is not CaptureState.INERT:
             runtime.cancel_designation_capture()
 
+    async def async_step_reconfigure(
+        self, user_input: dict[str, object] | None = None
+    ) -> FlowResult:
+        """Edit name, rocker count, and long-press threshold (Phase 5B).
+
+        Dispatched automatically when this flow is started with
+        ``context={"source": "reconfigure", "subentry_id": ...}`` (see
+        ``ConfigSubentryFlowManager.async_create_flow``, which sets
+        ``init_step = context["source"]``). Never shows or accepts an
+        address/security-key field -- this step cannot change or re-enter a
+        switch's commissioned identity, only its editable non-secret
+        subentry fields (see ``commissioning_store.py``'s key/address
+        boundary). A changed ``rockers``/``long_press_threshold_ms`` takes
+        effect on the automatic reload ``async_update_and_abort`` triggers
+        -- no separate reload step needed.
+        """
+        subentry = self._get_reconfigure_subentry()
+        schema = self.add_suggested_values_to_schema(
+            _reconfigure_schema(), subentry.data
+        )
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            name = str(user_input.get("name", "")).strip()
+            rockers = int(str(user_input.get("rockers", "2")))
+            threshold_ms = int(
+                user_input.get(
+                    "long_press_threshold_ms", DEFAULT_LONG_PRESS_THRESHOLD_MS
+                )
+            )
+            if not name:
+                errors["base"] = "invalid_commissioning_data"
+            else:
+                return self.async_update_and_abort(
+                    self._get_entry(),
+                    subentry,
+                    title=name,
+                    data={
+                        **subentry.data,
+                        "name": name,
+                        "rockers": rockers,
+                        "long_press_threshold_ms": threshold_ms,
+                    },
+                )
+
+        return self.async_show_form(
+            step_id="reconfigure", data_schema=schema, errors=errors
+        )
+
     async def async_step_key_entry_detected(
         self, user_input: dict[str, object] | None = None
     ) -> FlowResult:
@@ -267,6 +366,11 @@ class SwitchSubentryFlow(config_entries.ConfigSubentryFlow):
             )
             name = str(user_input.get("name", "")).strip()
             rockers = int(str(user_input.get("rockers", "2")))
+            threshold_ms = int(
+                user_input.get(
+                    "long_press_threshold_ms", DEFAULT_LONG_PRESS_THRESHOLD_MS
+                )
+            )
             if address is None or key is None or not name:
                 errors["base"] = "invalid_commissioning_data"
             elif runtime.commissioning_store.get(address) is not None:
@@ -293,7 +397,12 @@ class SwitchSubentryFlow(config_entries.ConfigSubentryFlow):
                 # no explicit reload needed here.
                 return self.async_create_entry(
                     title=name,
-                    data={"handle": handle, "name": name, "rockers": rockers},
+                    data={
+                        "handle": handle,
+                        "name": name,
+                        "rockers": rockers,
+                        "long_press_threshold_ms": threshold_ms,
+                    },
                     unique_id=handle,
                 )
 

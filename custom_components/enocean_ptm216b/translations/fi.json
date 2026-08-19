@@ -53,7 +53,8 @@
             "address": "Osoite (manuaalinen vaihtoehto)",
             "security_key": "Turva-avain (manuaalinen vaihtoehto, 32 heksamerkkiä)",
             "name": "Nimi",
-            "rockers": "Painikeparien määrä"
+            "rockers": "Painikeparien määrä",
+            "long_press_threshold_ms": "Pitkän painalluksen kynnysarvo (ms)"
           }
         },
         "key_entry_manual": {
@@ -65,7 +66,17 @@
             "address": "Osoite (manuaalinen vaihtoehto)",
             "security_key": "Turva-avain (manuaalinen vaihtoehto, 32 heksamerkkiä)",
             "name": "Nimi",
-            "rockers": "Painikeparien määrä"
+            "rockers": "Painikeparien määrä",
+            "long_press_threshold_ms": "Pitkän painalluksen kynnysarvo (ms)"
+          }
+        },
+        "reconfigure": {
+          "title": "Muokkaa kytkintä",
+          "description": "Muuta tämän kytkimen nimeä, painikeparien määrää tai pitkän painalluksen kynnysarvoa. Tämä ei koskaan ota kytkintä uudelleen käyttöön -- sen osoite ja turva-avain pysyvät ennallaan eikä niitä voi syöttää tässä.",
+          "data": {
+            "name": "Nimi",
+            "rockers": "Painikeparien määrä",
+            "long_press_threshold_ms": "Pitkän painalluksen kynnysarvo (ms)"
           }
         }
       },
@@ -79,8 +90,23 @@
         "switch_already_commissioned": "Tämä kytkin on jo otettu käyttöön. Poista sen olemassa oleva alikohde ensin, jos haluat ottaa sen uudelleen käyttöön uudella nimellä."
       },
       "abort": {
-        "designation_mismatch": "Syötetty osoite ei vastaa tässä velhossa tunnistettua kytkintä. Palaa takaisin ja tunnista sama fyysinen kytkin, tai jatka ilman tunnistusta."
+        "designation_mismatch": "Syötetty osoite ei vastaa tässä velhossa tunnistettua kytkintä. Palaa takaisin ja tunnista sama fyysinen kytkin, tai jatka ilman tunnistusta.",
+        "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
       }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "press": "\"{subtype}\" painettu",
+      "release": "\"{subtype}\" vapautettu",
+      "short_press": "\"{subtype}\" lyhyt painallus",
+      "long_press": "\"{subtype}\" pitkä painallus (pidetään pohjassa)"
+    },
+    "trigger_subtype": {
+      "A0": "A0",
+      "A1": "A1",
+      "B0": "B0",
+      "B1": "B1"
     }
   }
 }

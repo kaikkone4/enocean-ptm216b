@@ -10,6 +10,7 @@ from typing import Callable
 from .commissioning_store import CommissioningStore
 from .evidence_capture import EvidenceCollector, EvidenceScheduler, EvidenceState
 from .identity import device_handle, device_identifier
+from .press_timing import PressAction, PressTimingTracker
 from .telegram import Button, Ptm216bButtonState
 
 DESIGNATION_BASELINE_SECONDS = 10.0
@@ -19,7 +20,11 @@ MINIMUM_DESIGNATION_OBSERVATIONS = 3
 CaptureTimerCancel = Callable[[], None]
 CaptureScheduler = Callable[[float, Callable[[], None]], CaptureTimerCancel]
 CaptureStateListener = Callable[[], None]
-ButtonEventListener = Callable[[bool], None]
+# Extended in Phase 5B from Callable[[bool], None] (press/release only) to
+# carry every press_timing.PressAction (press/release/short_press/
+# long_press) -- see press_timing.py's module docstring for the state
+# machine that decides when each one fires.
+ButtonEventListener = Callable[[PressAction], None]
 DiagnosticsListener = Callable[[], None]
 
 
@@ -71,16 +76,25 @@ class CommissionedSwitchRuntime:
     failure, MIC failure, ``DUPLICATE``, ``REPLAY_REJECTED``, or a status
     decode failure on an already-``ACCEPTED`` counter); first-trust counter
     initialization (see ``button_pipeline.py``) increments neither.
+
+    ``press_tracker`` (Phase 5B) is the one instance of
+    ``press_timing.PressTimingTracker`` for this switch: every verified
+    button state is routed through it rather than fired directly, so a
+    single button-entity listener transparently receives raw ``press``,
+    raw ``release``, and the derived ``short_press``/``long_press`` it
+    decides. Its ``threshold_ms``/``scheduler`` are configured once by
+    ``event.py``'s ``async_setup_entry`` from the switch's subentry data --
+    this dataclass just owns and clears it.
     """
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     verified_count: int = 0
     rejected_count: int = 0
+    press_tracker: PressTimingTracker = field(
+        default_factory=PressTimingTracker, repr=False
+    )
     _diagnostics_listeners: list[DiagnosticsListener] = field(
         default_factory=list, repr=False
-    )
-    _event_listeners: dict[Button, ButtonEventListener] = field(
-        default_factory=dict, repr=False
     )
 
     def record_rejected(self) -> None:
@@ -89,16 +103,15 @@ class CommissionedSwitchRuntime:
         self._notify_diagnostics()
 
     def record_verified_and_fire(self, button_state: Ptm216bButtonState) -> None:
-        """Count one fully-verified telegram and fire its button event.
+        """Count one fully-verified telegram and route it to ``press_tracker``.
 
-        Only calls the listener registered for ``button_state.button`` --
-        the other three of this switch's four button entities never fire.
+        Only ``button_state.button``'s registered listener, if any, ever
+        fires -- the other three of this switch's four button entities
+        never fire, exactly as before Phase 5B.
         """
         self.verified_count += 1
         self._notify_diagnostics()
-        listener = self._event_listeners.get(button_state.button)
-        if listener is not None:
-            listener(button_state.is_press)
+        self.press_tracker.handle_button_state(button_state)
 
     def add_diagnostics_listener(self, listener: DiagnosticsListener) -> None:
         """Subscribe one diagnostic sensor (Verified or Rejected telegrams)."""
@@ -112,11 +125,13 @@ class CommissionedSwitchRuntime:
     def set_event_listener(
         self, button: Button, listener: ButtonEventListener | None
     ) -> None:
-        """Register (or, with ``None``, clear) one button's event-entity listener."""
-        if listener is None:
-            self._event_listeners.pop(button, None)
-        else:
-            self._event_listeners[button] = listener
+        """Register (or, with ``None``, clear) one button's event-entity listener.
+
+        Delegates to ``press_tracker.set_listener`` -- there is only ever
+        one registered listener per button, shared by every action
+        (press/release/short_press/long_press) that button emits.
+        """
+        self.press_tracker.set_listener(button, listener)
 
     def _notify_diagnostics(self) -> None:
         for listener in self._diagnostics_listeners:
@@ -382,6 +397,20 @@ class Ptm216bRuntimeData:
             runtime = CommissionedSwitchRuntime()
             self.commissioned_switches[canonical_address] = runtime
         return runtime
+
+    def clear_press_timers(self) -> None:
+        """Cancel every commissioned switch's open press-hold timers.
+
+        Called on unload (see ``__init__.py``'s ``async_unload_entry``) so
+        no ``press_timing.PressTimingTracker`` timer ever outlives this
+        entry. A reload always rebuilds ``Ptm216bRuntimeData`` from
+        scratch, so this is the only cleanup point needed -- there is no
+        separate per-switch decommission hook, matching
+        ``cancel_designation_capture``/``cancel_evidence_capture``'s own
+        unload-only cleanup convention.
+        """
+        for switch_runtime in self.commissioned_switches.values():
+            switch_runtime.press_tracker.clear()
 
     def compute_device_identifier(self, address: str) -> str:
         """Return the local HMAC identifier for an address, using this entry's secret.
