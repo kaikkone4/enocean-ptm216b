@@ -1,4 +1,4 @@
-"""Device triggers: bind automations to a button's press/release/short/long.
+"""Device triggers: bind automations to a button pattern's press/release/short/long.
 
 Standard ``homeassistant.components.device_automation`` device_trigger
 pattern (auto-discovered by module name -- nothing else needs to register
@@ -13,10 +13,12 @@ the four actions those already emit (``press``, ``release``,
 ``short_press``, ``long_press``).
 
 Per HA device-trigger convention, ``type`` is the action (per
-``press_timing.PressAction``) and ``subtype`` is the button
-(A0/A1/B0/B1) -- a one-rocker switch (see ``config_flow.py``'s Add-device
-wizard) offers only A0/A1 triggers, matching exactly the button set
-``event.py`` creates entities for.
+``press_timing.PressAction``) and ``subtype`` is the button pattern -- one
+of the six :class:`~telegram.ButtonPattern` values (A0, A1, B0, B1, and, as
+of Phase 5D, the combo patterns ``"A0+B0"``/``"A1+B1"``) for a two-rocker
+switch, or just A0/A1 for a one-rocker switch (see ``config_flow.py``'s
+Add-device wizard) -- matching exactly the pattern set ``event.py`` creates
+entities for, via the same ``rockers == 1`` convention.
 """
 
 from __future__ import annotations
@@ -43,13 +45,13 @@ from homeassistant.helpers.typing import ConfigType
 
 from .const import ATTR_ACTION, ATTR_BUTTON, DOMAIN, EVENT_ENOCEAN_PTM216B
 from .press_timing import PressAction
-from .telegram import Button
+from .telegram import ButtonPattern
 
 CONF_SUBTYPE = "subtype"
 
-_SINGLE_ROCKER_BUTTONS = (Button.A0, Button.A1)
+_SINGLE_ROCKER_PATTERNS = (ButtonPattern.A0, ButtonPattern.A1)
 _TRIGGER_TYPES = [action.value for action in PressAction]
-_TRIGGER_SUBTYPES = [button.value for button in Button]
+_TRIGGER_SUBTYPES = [pattern.value for pattern in ButtonPattern]
 
 TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
     {
@@ -59,10 +61,10 @@ TRIGGER_SCHEMA = DEVICE_TRIGGER_BASE_SCHEMA.extend(
 )
 
 
-def _rocker_buttons_for_device(
+def _rocker_patterns_for_device(
     hass: HomeAssistant, device_id: str
-) -> tuple[Button, ...] | None:
-    """Return one commissioned switch device's rocker buttons, or ``None``.
+) -> tuple[ButtonPattern, ...] | None:
+    """Return one commissioned switch device's button patterns, or ``None``.
 
     ``None`` means "not a commissioned switch of this integration" -- an
     unknown device, a device belonging to a different integration, or a
@@ -91,9 +93,9 @@ def _rocker_buttons_for_device(
                 and subentry.data.get("handle") == handle
             ):
                 return (
-                    _SINGLE_ROCKER_BUTTONS
+                    _SINGLE_ROCKER_PATTERNS
                     if subentry.data.get("rockers") == 1
-                    else tuple(Button)
+                    else tuple(ButtonPattern)
                 )
     return None
 
@@ -103,14 +105,14 @@ async def async_get_triggers(
 ) -> list[dict[str, Any]]:
     """List short_press/long_press/press/release triggers for one switch device.
 
-    Returns one trigger per (button, action) pair for this device's actual
-    rocker set -- four actions x two buttons (A0/A1 only) for a one-rocker
-    switch, four actions x four buttons for a two-rocker switch. Returns
-    an empty list for any device this integration does not recognize as a
-    currently commissioned switch.
+    Returns one trigger per (pattern, action) pair for this device's actual
+    rocker set -- four actions x two patterns (A0/A1 only) for a one-rocker
+    switch, four actions x six patterns (including the two combo patterns)
+    for a two-rocker switch. Returns an empty list for any device this
+    integration does not recognize as a currently commissioned switch.
     """
-    buttons = _rocker_buttons_for_device(hass, device_id)
-    if buttons is None:
+    patterns = _rocker_patterns_for_device(hass, device_id)
+    if patterns is None:
         return []
     return [
         {
@@ -118,9 +120,9 @@ async def async_get_triggers(
             CONF_DEVICE_ID: device_id,
             CONF_DOMAIN: DOMAIN,
             CONF_TYPE: action,
-            CONF_SUBTYPE: button.value,
+            CONF_SUBTYPE: pattern.value,
         }
-        for button in buttons
+        for pattern in patterns
         for action in _TRIGGER_TYPES
     ]
 
@@ -131,13 +133,14 @@ async def async_validate_trigger_config(
     """Validate a trigger's type/subtype against this device's actual rocker set.
 
     ``TRIGGER_SCHEMA`` alone already rejects an unknown action or an
-    out-of-range button label; this additionally rejects a syntactically
-    valid B0/B1 subtype for a one-rocker switch, which has no such entity.
+    out-of-range pattern label; this additionally rejects a syntactically
+    valid B0/B1/combo subtype for a one-rocker switch, which has no such
+    entity.
     """
     config = TRIGGER_SCHEMA(config)
     device_id = config[CONF_DEVICE_ID]
-    buttons = _rocker_buttons_for_device(hass, device_id)
-    if buttons is None or config[CONF_SUBTYPE] not in {b.value for b in buttons}:
+    patterns = _rocker_patterns_for_device(hass, device_id)
+    if patterns is None or config[CONF_SUBTYPE] not in {p.value for p in patterns}:
         raise InvalidDeviceAutomationConfig(
             f"Trigger {config[CONF_TYPE]}/{config[CONF_SUBTYPE]} is not valid "
             f"for device_id '{device_id}'"

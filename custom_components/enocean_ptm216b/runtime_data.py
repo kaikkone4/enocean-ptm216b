@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Callable
 
@@ -11,7 +11,7 @@ from .commissioning_store import CommissioningStore
 from .evidence_capture import EvidenceCollector, EvidenceScheduler, EvidenceState
 from .identity import device_handle, device_identifier
 from .press_timing import PressAction, PressTimingTracker
-from .telegram import Button, Ptm216bButtonState
+from .telegram import ButtonPattern, Ptm216bButtonState, normalize_button_pattern
 
 DESIGNATION_BASELINE_SECONDS = 10.0
 DESIGNATION_CAPTURE_SECONDS = 30.0
@@ -71,25 +71,42 @@ class CommissionedSwitchRuntime:
     telegram -- see :meth:`record_verified_and_fire` and
     :meth:`record_rejected` for the single, precise rule: "verified" is a
     telegram that passed shape, MIC, and counter (``ACCEPTED``) verification
-    AND decoded to exactly one button, and therefore fired an event;
-    "rejected" is every other outcome that reached a decision (parse
-    failure, MIC failure, ``DUPLICATE``, ``REPLAY_REJECTED``, or a status
-    decode failure on an already-``ACCEPTED`` counter); first-trust counter
-    initialization (see ``button_pipeline.py``) increments neither.
+    AND decoded to one of the six accepted button patterns, and therefore
+    fired an event; "rejected" is every other outcome that reached a
+    decision (parse failure, MIC failure, ``DUPLICATE``, ``REPLAY_
+    REJECTED``, or a status decode failure on an already-``ACCEPTED``
+    counter); first-trust counter initialization (see ``button_pipeline.py``)
+    increments neither.
+
+    ``rockers`` (Phase 5D) is this switch's configured rocker count -- ``1``
+    for a single full-width rocker plate, ``2`` (the default here, matching
+    ``config_flow.py``'s own subentry-schema default) for the normal
+    two-rocker-pair module. Set once, exactly like ``press_tracker.
+    threshold_ms``/``.scheduler`` already are, by ``event.py``'s
+    ``async_setup_entry`` from the switch's subentry data. It is what
+    :meth:`record_verified_and_fire` passes to
+    ``telegram.normalize_button_pattern`` -- a 2-rocker switch (or the
+    default before ``event.py`` has run once) exposes all six
+    :class:`~telegram.ButtonPattern` values as distinct event entities/
+    device triggers; a 1-rocker switch silently aliases A0/B0/A0+B0 to one
+    logical "A0" and A1/B1/A1+B1 to one logical "A1", so only two entities
+    ever exist for it and it never matters exactly where on the wide plate
+    the user pressed.
 
     ``press_tracker`` (Phase 5B) is the one instance of
-    ``press_timing.PressTimingTracker`` for this switch: every verified
-    button state is routed through it rather than fired directly, so a
-    single button-entity listener transparently receives raw ``press``,
-    raw ``release``, and the derived ``short_press``/``long_press`` it
-    decides. Its ``threshold_ms``/``scheduler`` are configured once by
-    ``event.py``'s ``async_setup_entry`` from the switch's subentry data --
-    this dataclass just owns and clears it.
+    ``press_timing.PressTimingTracker`` for this switch: every verified,
+    normalized button state is routed through it rather than fired
+    directly, so a single button-pattern-entity listener transparently
+    receives raw ``press``, raw ``release``, and the derived ``short_
+    press``/``long_press`` it decides. Its ``threshold_ms``/``scheduler``
+    are configured once by ``event.py``'s ``async_setup_entry`` from the
+    switch's subentry data -- this dataclass just owns and clears it.
     """
 
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     verified_count: int = 0
     rejected_count: int = 0
+    rockers: int = 2
     press_tracker: PressTimingTracker = field(
         default_factory=PressTimingTracker, repr=False
     )
@@ -103,15 +120,25 @@ class CommissionedSwitchRuntime:
         self._notify_diagnostics()
 
     def record_verified_and_fire(self, button_state: Ptm216bButtonState) -> None:
-        """Count one fully-verified telegram and route it to ``press_tracker``.
+        """Count one fully-verified telegram, normalize it, and route it to
+        ``press_tracker``.
 
-        Only ``button_state.button``'s registered listener, if any, ever
-        fires -- the other three of this switch's four button entities
-        never fire, exactly as before Phase 5B.
+        Normalizes ``button_state.pattern`` via ``telegram.
+        normalize_button_pattern(..., self.rockers)`` before handing it to
+        the tracker, so a 1-rocker switch's A0/B0/A0+B0 (or A1/B1/A1+B1)
+        raw patterns all resolve to the one logical A0 (or A1) listener --
+        only that pattern's registered listener, if any, ever fires. On a
+        2-rocker switch normalization is the identity function, so this is
+        unobservable there: still only the exact decoded pattern's listener
+        fires, exactly as before Phase 5D.
         """
         self.verified_count += 1
         self._notify_diagnostics()
-        self.press_tracker.handle_button_state(button_state)
+        normalized_pattern = normalize_button_pattern(
+            button_state.pattern, self.rockers
+        )
+        normalized_state = replace(button_state, pattern=normalized_pattern)
+        self.press_tracker.handle_button_state(normalized_state)
 
     def add_diagnostics_listener(self, listener: DiagnosticsListener) -> None:
         """Subscribe one diagnostic sensor (Verified or Rejected telegrams)."""
@@ -123,15 +150,15 @@ class CommissionedSwitchRuntime:
             self._diagnostics_listeners.remove(listener)
 
     def set_event_listener(
-        self, button: Button, listener: ButtonEventListener | None
+        self, pattern: ButtonPattern, listener: ButtonEventListener | None
     ) -> None:
-        """Register (or, with ``None``, clear) one button's event-entity listener.
+        """Register (or, with ``None``, clear) one pattern's event-entity listener.
 
         Delegates to ``press_tracker.set_listener`` -- there is only ever
-        one registered listener per button, shared by every action
-        (press/release/short_press/long_press) that button emits.
+        one registered listener per pattern, shared by every action
+        (press/release/short_press/long_press) that pattern emits.
         """
-        self.press_tracker.set_listener(button, listener)
+        self.press_tracker.set_listener(pattern, listener)
 
     def _notify_diagnostics(self) -> None:
         for listener in self._diagnostics_listeners:
