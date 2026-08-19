@@ -182,9 +182,17 @@ class SwitchSubentryFlow(config_entries.ConfigSubentryFlow):
         if state is CaptureState.INERT:
             self._cancel_detect_task()
             self._detect_phase = None
+            # A step whose previous result was SHOW_PROGRESS may ONLY
+            # transition to SHOW_PROGRESS or SHOW_PROGRESS_DONE -- the real
+            # FlowManager (homeassistant/data_entry_flow.py::_async_configure)
+            # raises ValueError otherwise. async_show_progress_done's
+            # next_step_id is what actually dispatches to the next step
+            # handler (via FlowManager.async_configure's own loop) -- calling
+            # that handler directly here, even via `await`, is exactly the
+            # illegal transition the manager rejects.
             if runtime.designation_outcome is DesignationOutcome.SELECTED:
-                return await self.async_step_key_entry_detected()
-            return await self.async_step_detect_failed()
+                return self.async_show_progress_done(next_step_id="key_entry_detected")
+            return self.async_show_progress_done(next_step_id="detect_failed")
 
         if self._detect_phase != state or self._detect_task is None:
             self._cancel_detect_task()

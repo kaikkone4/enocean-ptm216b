@@ -442,6 +442,17 @@ async def test_detect_starts_baseline_and_shows_progress(hass):
 
 
 async def test_detect_advances_to_key_entry_detected_on_selection(hass):
+    """A step whose previous result was SHOW_PROGRESS may only return
+    SHOW_PROGRESS or SHOW_PROGRESS_DONE -- the real FlowManager
+    (homeassistant/data_entry_flow.py::_async_configure) raises ValueError
+    for any other result type. async_show_progress_done's ``next_step_id``
+    is what dispatches to the next step handler (via the manager's own
+    async_configure loop); calling that handler directly, even via
+    ``await``, is exactly the illegal transition this test guards against.
+    This test alone still bypasses the real manager (see
+    _subentry_flow_for's docstring) -- the manager-enforced version is
+    below, in test_detect_progress_transitions_survive_the_real_flow_manager.
+    """
     entry = await _entry_without_designation(hass)
     flow = _subentry_flow_for(hass, entry)
 
@@ -454,11 +465,16 @@ async def test_detect_advances_to_key_entry_detected_on_selection(hass):
 
     result = await flow.async_step_detect(None)
 
-    assert result["type"] == "form"
+    assert result["type"] == "progress_done"
     assert result["step_id"] == "key_entry_detected"
 
 
 async def test_detect_offers_retry_menu_on_no_selection(hass):
+    """See test_detect_advances_to_key_entry_detected_on_selection's
+    docstring for why this asserts SHOW_PROGRESS_DONE, not the menu itself
+    -- the menu is what the *next* step (detect_failed) returns, once the
+    manager dispatches to it.
+    """
     entry = await _entry_without_designation(hass)
     flow = _subentry_flow_for(hass, entry)
 
@@ -468,9 +484,8 @@ async def test_detect_offers_retry_menu_on_no_selection(hass):
 
     result = await flow.async_step_detect(None)
 
-    assert result["type"] == "menu"
+    assert result["type"] == "progress_done"
     assert result["step_id"] == "detect_failed"
-    assert set(result["menu_options"]) == {"detect", "key_entry_manual"}
 
 
 async def test_detect_shows_new_progress_action_per_phase(hass):
@@ -497,3 +512,85 @@ async def test_async_remove_cancels_a_running_detection(hass):
     flow.async_remove()
 
     assert entry.runtime_data.capture_state is CaptureState.INERT
+
+
+# ---------------------------------------------------------------------------
+# SwitchSubentryFlow: detection progress, enforced by the REAL flow manager
+# ---------------------------------------------------------------------------
+#
+# Every test above builds a bare SwitchSubentryFlow instance directly (see
+# _subentry_flow_for's docstring) and so never exercises
+# homeassistant.data_entry_flow.FlowManager._async_configure's own rule: a
+# step whose previous result was SHOW_PROGRESS may ONLY transition to
+# SHOW_PROGRESS or SHOW_PROGRESS_DONE, or the manager raises ValueError.
+# async_step_detect returning await self.async_step_key_entry_detected()/
+# await self.async_step_detect_failed() directly (instead of
+# self.async_show_progress_done(next_step_id=...)) violated exactly this
+# rule in production, silently, because none of the direct-call tests above
+# could ever catch it. This test drives the wizard through
+# hass.config_entries.subentries.async_init/async_configure instead, so the
+# real manager enforces the rule.
+#
+# Like the pre-existing full-flow tests in test_config_flow.py (which drive
+# hass.config_entries.flow.async_init the same way), starting a flow this
+# way loads this integration's declared "bluetooth_adapters" dependency,
+# which transitively sets up "bluetooth" -- unavailable/dbus_fast-broken on
+# macOS, an already-documented environmental failure unrelated to this
+# test's own logic. This test is expected to pass on Linux CI even where it
+# fails locally on macOS for that unrelated reason.
+
+
+async def test_detect_progress_transitions_survive_the_real_flow_manager(hass):
+    entry = await _entry_without_designation(hass)
+
+    init_result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "switch"), context={"source": "user"}
+    )
+    progress_result = await hass.config_entries.subentries.async_configure(
+        init_result["flow_id"], {"next_step_id": "detect"}
+    )
+    assert progress_result["type"] == "progress"
+    assert progress_result["progress_action"] == "detect_baseline"
+
+    # Force the terminal outcome directly, exactly like the direct-call
+    # tests above -- this test's purpose is the transition rule the manager
+    # enforces, not re-testing the bounded-capture timing itself (covered
+    # by runtime_data.py's own tests).
+    entry.runtime_data.designation_outcome = DesignationOutcome.SELECTED
+    entry.runtime_data.designated_identifier = device_identifier(
+        SECRET, CANONICAL_ADDRESS
+    )
+    entry.runtime_data.capture_state = CaptureState.INERT
+
+    # Must NOT raise ValueError("Show progress can only transition to show
+    # progress or show progress done.") -- this is exactly the regression
+    # this test guards against.
+    final_result = await hass.config_entries.subentries.async_configure(
+        progress_result["flow_id"], None
+    )
+
+    assert final_result["type"] == "form"
+    assert final_result["step_id"] == "key_entry_detected"
+
+
+async def test_detect_failed_progress_transition_survives_the_real_flow_manager(hass):
+    entry = await _entry_without_designation(hass)
+
+    init_result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "switch"), context={"source": "user"}
+    )
+    progress_result = await hass.config_entries.subentries.async_configure(
+        init_result["flow_id"], {"next_step_id": "detect"}
+    )
+    assert progress_result["type"] == "progress"
+
+    entry.runtime_data.designation_outcome = DesignationOutcome.NO_SELECTION
+    entry.runtime_data.capture_state = CaptureState.INERT
+
+    final_result = await hass.config_entries.subentries.async_configure(
+        progress_result["flow_id"], None
+    )
+
+    assert final_result["type"] == "menu"
+    assert final_result["step_id"] == "detect_failed"
+    assert set(final_result["menu_options"]) == {"detect", "key_entry_manual"}
