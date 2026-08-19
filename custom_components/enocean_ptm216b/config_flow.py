@@ -20,6 +20,8 @@ from typing import Callable
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.components import bluetooth
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 from homeassistant.helpers.event import async_call_later
@@ -38,6 +40,8 @@ from .runtime_data import (
     CaptureState,
     DesignationOutcome,
     Ptm216bRuntimeData,
+    RadioCensusAdvertisementHandler,
+    RadioCensusCallbackCancel,
 )
 
 _ROCKER_OPTIONS = [
@@ -129,7 +133,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, object] | None = None
     ) -> FlowResult:
-        """Offer a manual menu between the two diagnostic capture tools.
+        """Offer a manual menu between the three diagnostic capture tools.
 
         Commissioning/decommissioning moved to the per-switch Add-device
         wizard (config subentries, see :class:`SwitchSubentryFlow`) in
@@ -138,7 +142,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """
         return self.async_show_menu(
             step_id="reconfigure",
-            menu_options=["designation_capture", "evidence_capture"],
+            menu_options=["designation_capture", "evidence_capture", "radio_census"],
         )
 
     async def async_step_designation_capture(
@@ -160,9 +164,77 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="no_designated_device")
         return self.async_abort(reason="evidence_capture_started")
 
+    async def async_step_radio_census(
+        self, user_input: dict[str, object] | None = None
+    ) -> FlowResult:
+        """Manually start the bounded, runtime-only radio census (Phase 7).
+
+        Does not require a designated device -- see radio_census.py's
+        module docstring for why this diagnostic is deliberately broader
+        than evidence capture.
+        """
+        entry = self._get_reconfigure_entry()
+        runtime: Ptm216bRuntimeData = entry.runtime_data
+        runtime.start_radio_census(
+            self._schedule, self._register_unfiltered_bluetooth_callback
+        )
+        return self.async_abort(reason="radio_census_started")
+
     def _schedule(self, delay: float, finish: Callable[[], None]) -> Callable[[], None]:
         """Schedule a bounded-capture timer using Home Assistant's event loop."""
         return async_call_later(self.hass, delay, lambda _now: finish())
+
+    def _register_unfiltered_bluetooth_callback(
+        self, handler: RadioCensusAdvertisementHandler
+    ) -> RadioCensusCallbackCancel:
+        """Register this runtime's own broad, unfiltered, passive callback.
+
+        Deliberately separate from -- and never altering -- this entry's
+        normal manufacturer-filtered callback in ``__init__.py``: the radio
+        census must hear every nearby advertisement, from any manufacturer,
+        connectable or not, to answer what this installation's receive path
+        can actually hear (see radio_census.py's module docstring).
+
+        ``{"connectable": False}``, with no other matcher field, is the one
+        matcher shape ``homeassistant.components.bluetooth``'s manager
+        treats as "match every advertisement, connectable or not" --
+        verified against the installed package
+        (``homeassistant/components/bluetooth/manager.py``'s
+        ``async_register_callback``: an empty/``None`` matcher instead
+        defaults ``connectable`` to ``True``, which would silently drop
+        every *non*-connectable advertisement -- exactly the ones this
+        integration's own normal callback already listens for; and
+        ``homeassistant/components/bluetooth/match.py``'s
+        ``BluetoothCallbackMatcherIndex.add_callback_matcher``: a matcher
+        with no ``local_name``/``manufacturer_id``/``service_uuid``/
+        ``service_data_uuid`` field falls through to its catch-all
+        ``self.connectable`` bucket, which ``match_callbacks`` checks
+        against every incoming advertisement unconditionally -- while
+        ``match.py``'s ``ble_device_matches`` only rejects on
+        ``service_info.connectable`` when the matcher's own ``connectable``
+        value is true, so setting it ``False`` here accepts both). Scanning
+        stays passive (``BluetoothScanningMode.PASSIVE``), matching the
+        existing filtered callback -- no active scanning, no connections.
+        """
+
+        @callback
+        def _on_advertisement(
+            service_info: bluetooth.BluetoothServiceInfoBleak,
+            _change: bluetooth.BluetoothChange,
+        ) -> None:
+            handler(
+                service_info.address,
+                service_info.manufacturer_data,
+                set(service_info.service_uuids),
+                service_info.connectable,
+            )
+
+        return bluetooth.async_register_callback(
+            self.hass,
+            _on_advertisement,
+            {"connectable": False},
+            bluetooth.BluetoothScanningMode.PASSIVE,
+        )
 
     @classmethod
     def async_get_supported_subentry_types(
