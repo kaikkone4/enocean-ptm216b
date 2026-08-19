@@ -7,18 +7,44 @@
       },
       "reconfigure": {
         "title": "Manual capture",
-        "description": "Choose a bounded, manually started capture. Setup and passive observation never start either of these on their own.",
+        "description": "Choose a bounded, manually started capture, or commission/decommission a switch. Setup and passive observation never start any of these on their own.",
         "menu_options": {
           "designation_capture": "Designation capture",
-          "evidence_capture": "Evidence capture"
+          "evidence_capture": "Evidence capture",
+          "commission_switch": "Commission switch",
+          "decommission_switch": "Decommission switch"
+        }
+      },
+      "commission_switch": {
+        "title": "Commission a switch",
+        "description": "Enter the QR/label text printed on the module, or fill in the address and security key manually. The switch must already be designated (Phase 1.5) in this session; its address must match what you enter here. Never paste this material anywhere except this form -- not into chat, GitHub issues, or Git.",
+        "data": {
+          "qr_payload": "QR/label text",
+          "address": "Address (manual fallback)",
+          "security_key": "Security key (manual fallback, 32 hex characters)",
+          "name": "Name"
+        }
+      },
+      "decommission_switch": {
+        "title": "Decommission a switch",
+        "description": "Choose a commissioned switch to remove. Its address and security key are permanently deleted from local storage, and its device and entities are removed.",
+        "data": {
+          "switch": "Switch"
         }
       }
+    },
+    "error": {
+      "invalid_commissioning_data": "Could not read an address, security key, and name from the QR/label text or the manual fields. Check the QR text, or fill in the address, the 32-character security key, and a name."
     },
     "abort": {
       "already_configured": "Device is already configured",
       "designation_capture_started": "Designation capture started. Watch the Designation capture sensor for the baseline, press, and confirmation phases.",
       "evidence_capture_started": "Evidence capture started. Watch the Evidence capture sensor during the 90-second collecting window.",
-      "no_designated_device": "No device has been designated yet in this session. Run designation capture first, then start evidence capture again."
+      "no_designated_device": "No device has been designated yet in this session. Run designation capture first, then start evidence capture again.",
+      "designation_mismatch": "The entered address does not match the switch designated in this session. Designate the same physical switch (Phase 1.5) first, then commission it.",
+      "commissioning_complete": "Switch commissioned. Its button events and diagnostic sensors are now available.",
+      "no_commissioned_devices": "No commissioned switches exist yet.",
+      "decommissioning_complete": "Switch decommissioned. Its device and entities have been removed."
     }
   }
 }

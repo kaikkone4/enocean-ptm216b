@@ -23,7 +23,7 @@ async def test_unload_unloads_sensor_platform(hass):
 
     assert await enocean_ptm216b.async_unload_entry(hass, entry)
     hass.config_entries.async_unload_platforms.assert_awaited_once_with(
-        entry, ["sensor"]
+        entry, ["sensor", "event"]
     )
     cancel_timer.assert_called_once_with()
     assert entry.runtime_data.capture_state is CaptureState.INERT

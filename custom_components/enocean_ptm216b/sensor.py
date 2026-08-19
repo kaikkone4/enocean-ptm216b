@@ -7,21 +7,38 @@ from dataclasses import asdict
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import DOMAIN
 from .evidence_capture import EvidenceState
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Expose only an advertisement counter during the observation MVP."""
+    """Expose the observation-MVP sensors plus one pair per commissioned switch."""
     advertisement_sensor = Ptm216bAdvertisementCounter(entry)
     capture_sensor = Ptm216bDesignationCaptureSensor(entry)
     evidence_sensor = Ptm216bEvidenceCaptureSensor(entry)
     entry.runtime_data.sensor = advertisement_sensor
-    async_add_entities([advertisement_sensor, capture_sensor, evidence_sensor])
+    entities: list[SensorEntity] = [
+        advertisement_sensor,
+        capture_sensor,
+        evidence_sensor,
+    ]
+
+    store = entry.runtime_data.commissioning_store
+    if store is not None:
+        for canonical_address, switch in store.switches.items():
+            entities.append(
+                Ptm216bVerifiedTelegramsSensor(entry, canonical_address, switch.name)
+            )
+            entities.append(
+                Ptm216bRejectedTelegramsSensor(entry, canonical_address, switch.name)
+            )
+
+    async_add_entities(entities)
 
 
 class Ptm216bAdvertisementCounter(SensorEntity):
@@ -126,3 +143,87 @@ class Ptm216bEvidenceCaptureSensor(SensorEntity):
             summary = collector.summary
             return asdict(summary) if summary is not None else {}
         return {}
+
+
+class _Ptm216bCommissionedSwitchDiagnosticSensor(SensorEntity):
+    """Shared device-registry wiring for one commissioned switch's diagnostics.
+
+    Subclasses only need to set ``_name_suffix``/``_unique_suffix`` and read
+    the counter they expose from ``runtime_data.CommissionedSwitchRuntime``
+    -- see :meth:`runtime_data.CommissionedSwitchRuntime.record_verified_and_fire`
+    and ``.record_rejected`` for the exact rule deciding what increments each
+    one, documented once, in that one place.
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _unique_suffix: str
+
+    def __init__(self, entry: ConfigEntry, canonical_address: str, name: str) -> None:
+        self._entry = entry
+        self._canonical_address = canonical_address
+        handle = entry.runtime_data.commissioned_device_handle(canonical_address)
+        self._attr_unique_id = f"{entry.entry_id}_{handle}_{self._unique_suffix}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, handle)},
+            name=name,
+            manufacturer="EnOcean",
+            model="PTM 216B",
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to this switch's runtime counters after the entity is ready."""
+        await super().async_added_to_hass()
+        switch_runtime = self._entry.runtime_data.commissioned_switch_runtime(
+            self._canonical_address
+        )
+        switch_runtime.add_diagnostics_listener(self.async_write_ha_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Unsubscribe without retaining a stale listener on the runtime record."""
+        switch_runtime = self._entry.runtime_data.commissioned_switch_runtime(
+            self._canonical_address
+        )
+        switch_runtime.remove_diagnostics_listener(self.async_write_ha_state)
+        await super().async_will_remove_from_hass()
+
+
+class Ptm216bVerifiedTelegramsSensor(_Ptm216bCommissionedSwitchDiagnosticSensor):
+    """Count telegrams that passed shape+MIC+counter+status and fired an event.
+
+    Does NOT include first-trust counter initialization (which fires no
+    event) or a status-decode rejection on an already-accepted counter --
+    see ``runtime_data.CommissionedSwitchRuntime.record_verified_and_fire``.
+    """
+
+    _attr_name = "Verified telegrams"
+    _attr_icon = "mdi:check-decagram-outline"
+    _unique_suffix = "verified"
+
+    @property
+    def native_value(self) -> int:
+        """Return the live verified-telegram count since setup."""
+        return self._entry.runtime_data.commissioned_switch_runtime(
+            self._canonical_address
+        ).verified_count
+
+
+class Ptm216bRejectedTelegramsSensor(_Ptm216bCommissionedSwitchDiagnosticSensor):
+    """Aggregate count of every rejected telegram for one commissioned switch.
+
+    Includes parse-shape rejects, MIC-verification failures, duplicate and
+    replay-rejected counters, and status-decode failures -- see
+    ``runtime_data.CommissionedSwitchRuntime.record_rejected``. Never exposes
+    a reason, byte, address, or counter -- only this aggregate integer.
+    """
+
+    _attr_name = "Rejected telegrams"
+    _attr_icon = "mdi:close-octagon-outline"
+    _unique_suffix = "rejected"
+
+    @property
+    def native_value(self) -> int:
+        """Return the live rejected-telegram count since setup."""
+        return self._entry.runtime_data.commissioned_switch_runtime(
+            self._canonical_address
+        ).rejected_count

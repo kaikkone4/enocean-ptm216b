@@ -15,14 +15,22 @@ The integration exposes one diagnostic counter: **Observed advertisements**. It 
 
 ## Safety and security boundary
 
-A future decoder must validate the PTM's authenticated/encrypted telegram data before it emits an action:
+As of Phase 4 (see below), the integration decodes and authenticates telegrams from switches you explicitly commission, and emits a trusted button event only after every one of the following passes, in order:
 
-- fail closed on missing, invalid, or unverifiable MIC/authentication data
-- persistent replay protection before any trusted event
-- device-specific commissioning/security keys only through a local trusted provisioning flow
-- never paste keys, QR payloads, or NFC commissioning data into chat, issues, logs, or Git
+- the advertisement matches the exact supported PTM 216B telegram shape
+- its 32-bit signature (MIC) verifies against that switch's commissioned key
+- its sequence counter is strictly greater than the durably persisted counter for that switch (replay/duplicate protection)
+- its switch-status byte decodes to exactly one button
 
-Until that decoder exists, this integration is observation-only. It does not affect any existing Casambi pairing or lighting control.
+Any other advertisement -- from an uncommissioned switch, or one that fails any gate above -- never produces an event, state change, counter advance, or diagnostic byte leakage. There is no unauthenticated fallback at any gate.
+
+This remains true regardless of commissioning:
+
+- no BLE connection, pairing, bonding, GATT access, reset, or active scanning -- reception stays passive and non-connectable only
+- device-specific commissioning/security keys enter the integration only through the local trusted commissioning flow described below, and live only in a private, local-only Home Assistant storage file -- never in config-entry data, entity state/attributes, diagnostics, logs, or UI
+- never paste keys, QR payloads, or NFC commissioning data into chat, issues, logs, or Git -- only into the commissioning form itself
+
+This does not affect any existing Casambi pairing or lighting control.
 
 ## Manual designation capture (Phase 1.5)
 
@@ -144,14 +152,146 @@ Pure, unwired decoding primitives now exist alongside the passive observer:
   sequence counters, with an injectable persistence interface for a later
   Home Assistant `Store`-backed implementation.
 
-None of this is wired into the running integration. The callback registered
-in `__init__.py` is unchanged: it still only counts advertisements and feeds
-designation/evidence capture. The integration emits no button events, stores
-no keys, and remains a passive observer exactly as before. Encrypted-mode
-telegrams and optional-data forms are rejected pending future evidence; see
+At the time these primitives were built, none of them were wired into the
+running integration; Phase 4 (below) is that wiring, for commissioned
+switches only. The passive callback registered in `__init__.py` still always
+counts advertisements and feeds designation/evidence capture, for every
+matching advertisement, exactly as before. Encrypted-mode telegrams and
+optional-data forms are still rejected pending future evidence; see
 [docs/evidence-findings.md](docs/evidence-findings.md) and
 [docs/decoder-test-preparation.md](docs/decoder-test-preparation.md) for the
-full evidence trail and what remains open before any of this can be wired up.
+full evidence trail this decoder is built on.
+
+## Commissioning and button events (Phase 4)
+
+This is the first phase where the integration emits trusted button events —
+but only for switches you explicitly commission through a local, deliberate
+flow. Every other advertisement is still just counted, exactly as in the
+observation MVP.
+
+### Fail-closed pipeline
+
+For a commissioned switch's advertisement, every gate below must pass, in
+this exact order, before anything is emitted or any durable state changes:
+
+1. **Shape** — the advertisement's `manufacturer_data[0x03DA]` value must be
+   the one supported 9-byte telegram shape. Anything else is rejected.
+2. **MIC** — the telegram's 32-bit signature must cryptographically verify
+   against that switch's commissioned key. A missing, malformed, or invalid
+   MIC is rejected, indistinguishably from any other MIC failure, with no
+   state change of any kind.
+3. **Counter / replay** — the telegram's sequence counter must be strictly
+   greater than the durably persisted counter for that switch. An equal
+   counter is a duplicate (authenticated no-op); a lower counter is a replay
+   reject. Both are rejected with no counter advance.
+4. **Status** — only once shape, MIC, and counter all pass does the
+   switch-status byte get decoded. It must resolve to exactly one button
+   (A0, A1, B0, or B1); reserved, zero, or multiple-button bytes are
+   rejected — even though the counter has, by this point, already durably
+   advanced (that is the correct, deliberate order: counter/replay
+   protection does not depend on whether the status byte turns out to be
+   decodable).
+
+Only a telegram that passes all four gates fires an event, on the one event
+entity matching its decoded button.
+
+### First-trust policy: no unauthenticated fallback
+
+A newly commissioned switch has no prior counter to compare against. Its
+first cryptographically verified telegram (it still must pass the shape and
+MIC gates — there is no unauthenticated fallback at any point) silently
+initializes the persisted counter and produces **no event**. Every
+subsequent verified telegram is then judged normally against that counter.
+This is a one-time, per-switch, silent step — expect the very first press
+after commissioning to produce no event at all.
+
+### Where the address and key live
+
+Commissioning a switch is a deliberate, documented exception to this
+integration's normal "no addresses persisted" rule: a commissioned switch's
+BLE address and its 16-byte device-specific security key are retained, but
+**only** in a private, local-only Home Assistant storage file, never
+anywhere else — not in config-entry data, entity state or attributes,
+diagnostics, logs, or the UI. Decommissioning a switch deletes both
+permanently.
+
+**Never paste QR/label text, an address, or a security key into chat, a
+GitHub issue, or Git** — only into the commissioning form itself, inside
+your own Home Assistant instance.
+
+### Commissioning a switch
+
+Available from the integration's **Reconfigure** menu as **Commission
+switch**, alongside the existing Designation capture and Evidence capture
+options. It requires a switch already designated in this session (Phase
+1.5) — commissioning cross-checks that the address you enter belongs to
+that same physical switch (via the same local HMAC identity check
+designation itself uses) before trusting anything you type.
+
+Two ways to provide the address and key:
+
+- **QR/label text** — paste the full text printed on the module's label or
+  QR code into the "QR/label text" field. The form tolerantly extracts the
+  address and key from it regardless of exact spacing/`+` separators.
+- **Manual entry** — fill in the address (colon-separated or plain hex) and
+  the 32-character security key fields yourself. Used only if QR/label text
+  is left blank or does not yield both an address and a key.
+
+Give the switch a name, then submit. On success, the switch's four button
+event entities and two diagnostic sensors are created (or recreated) under
+a new device named after it.
+
+### Decommissioning a switch
+
+Available from the same **Reconfigure** menu as **Decommission switch**.
+Choose a switch by name; its address and key are permanently deleted from
+local storage, and its device and entities are removed. Only names are ever
+shown — other commissioned switches' addresses never appear in the list.
+
+### What each commissioned switch exposes
+
+- Four **event** entities, one per rocker button (A0, A1, B0, B1), each
+  firing `press` or `release`. Only the one entity matching the decoded
+  button fires per accepted telegram.
+- **Verified telegrams** (diagnostic sensor): counts only telegrams that
+  passed every gate above and produced an event. Does not include
+  first-trust initialization or a status-decode rejection.
+- **Rejected telegrams** (diagnostic sensor): counts everything else that
+  reached a decision — shape rejects, MIC failures, duplicates, replay
+  rejects, and status-decode rejects. Never exposes a reason, byte, address,
+  or counter — only this aggregate count.
+
+Both diagnostic sensors reset to zero on a Home Assistant restart; the
+durable, restart-surviving state is the sequence counter itself, in the
+private commissioning store.
+
+### Safe user-visible test
+
+1. Complete Phase 1.5 designation for your test switch first (see above).
+   Commissioning is unavailable until a switch is designated.
+2. Open the integration, choose **Reconfigure → Commission switch**, and
+   provide the QR/label text or the manual address + security key, plus a
+   name. Submit.
+3. Press each of the four buttons — A0, A1, B0, and B1 — a few times each.
+4. The **first** verified press after commissioning produces **no** event —
+   that is the first-trust policy, not a bug. Every press/release after that
+   should appear as an event on the corresponding event entity.
+5. Watch the **Verified telegrams** and **Rejected telegrams** sensors move
+   as expected: verified increments once per real press/release that
+   produces an event; rejected increments for anything discarded.
+6. **Polarity check**: press and *hold* one button. The event fired at the
+   moment you push down should be `press`; the one fired when you release
+   should be `release`. If it is the other way around, please report it —
+   the absolute press/release polarity is sourced from the manual, not yet
+   proven against a live device (see
+   [docs/evidence-findings.md](docs/evidence-findings.md)), and a one-line
+   mapping flip would be needed to fix it.
+7. Verify no address, key, raw payload byte, absolute counter, or full
+   identifier appears anywhere in entity state, attributes, logs, or
+   diagnostics. Only the switch's chosen name and its non-reversible device
+   handle are visible.
+8. Optionally, use **Reconfigure → Decommission switch** to remove the test
+   switch again and confirm its device and entities disappear.
 
 ## Test installation with HACS
 
