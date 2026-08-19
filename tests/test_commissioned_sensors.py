@@ -17,6 +17,8 @@ from custom_components.enocean_ptm216b.sensor import (
     async_setup_entry,
 )
 
+from conftest import RecordingAddEntities
+
 SECRET = b"\x01" * 32
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 CANONICAL_ADDRESS = canonicalize_address(ADDRESS)
@@ -26,6 +28,32 @@ SYNTHETIC_KEY = bytes(range(16))
 def _make_entry() -> Mock:
     entry = Mock(entry_id="entry-id")
     entry.runtime_data = Ptm216bRuntimeData(_hmac_secret=SECRET)
+    return entry
+
+
+async def _commissioned_entry(
+    hass, *, name: str = "Living room switch"
+) -> MockConfigEntry:
+    store = CommissioningStore(hass)
+    await store.async_load()
+    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, name)
+    runtime = Ptm216bRuntimeData(_hmac_secret=SECRET, commissioning_store=store)
+    handle = runtime.commissioned_device_handle(CANONICAL_ADDRESS)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={},
+        subentries_data=[
+            {
+                "data": {"handle": handle, "name": name, "rockers": 2},
+                "subentry_type": "switch",
+                "title": name,
+                "unique_id": handle,
+            }
+        ],
+    )
+    entry.runtime_data = runtime
+    entry.add_to_hass(hass)
     return entry
 
 
@@ -92,24 +120,24 @@ async def test_both_sensors_redraw_independently_on_their_own_counter():
 
 
 async def test_async_setup_entry_adds_two_diagnostic_sensors_per_switch(hass):
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    store = CommissioningStore(hass)
-    await store.async_load()
-    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, "Living room switch")
-    entry.runtime_data = Ptm216bRuntimeData(
-        _hmac_secret=SECRET, commissioning_store=store
-    )
-    entry.add_to_hass(hass)
+    entry = await _commissioned_entry(hass)
 
-    added: list = []
-    await async_setup_entry(hass, entry, added.extend)
+    recorder = RecordingAddEntities()
+    await async_setup_entry(hass, entry, recorder)
 
-    verified = [e for e in added if isinstance(e, Ptm216bVerifiedTelegramsSensor)]
-    rejected = [e for e in added if isinstance(e, Ptm216bRejectedTelegramsSensor)]
+    verified = [
+        e for e in recorder.added if isinstance(e, Ptm216bVerifiedTelegramsSensor)
+    ]
+    rejected = [
+        e for e in recorder.added if isinstance(e, Ptm216bRejectedTelegramsSensor)
+    ]
     # Plus the 3 always-present observation-MVP sensors.
-    assert len(added) == 5
+    assert len(recorder.added) == 5
     assert len(verified) == 1
     assert len(rejected) == 1
+    (subentry_id,) = entry.subentries
+    assert recorder.subentry_ids.count(subentry_id) == 2
+    assert recorder.subentry_ids.count(None) == 3
 
 
 async def test_async_setup_entry_adds_no_commissioned_sensors_without_switches(hass):
@@ -121,7 +149,7 @@ async def test_async_setup_entry_adds_no_commissioned_sensors_without_switches(h
     )
     entry.add_to_hass(hass)
 
-    added: list = []
-    await async_setup_entry(hass, entry, added.extend)
+    recorder = RecordingAddEntities()
+    await async_setup_entry(hass, entry, recorder)
 
-    assert len(added) == 3
+    assert len(recorder.added) == 3
