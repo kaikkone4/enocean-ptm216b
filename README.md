@@ -530,6 +530,50 @@ two logical patterns a one-rocker switch actually has.
    one-rocker switch's presses -- aliasing changes only which entity
    fires, never whether a telegram counts as verified.
 
+## Hue-grade device page presentation (Phase 6)
+
+A commissioned switch's device page now presents its button events the
+same way the official Hue integration presents "Friends of Hue" switch
+buttons: each event entity carries the standard **button** device class
+(the button icon on the Events card), a translated name -- "Button A0" in
+English, "Painike A0" in Finnish, and so on for every pattern including
+the combo ones ("Button A0+B0" / "Painike A0+B0") -- and a translated
+last-event description ("Short press"/"Lyhyt painallus" instead of the
+raw `short_press`). The automation editor's device-trigger picker got the
+same treatment: trigger subtypes read as "Button A0" / "Buttons A0+B0
+together" (Finnish: "Painike A0" / "Painikkeet A0+B0 yhtä aikaa") instead
+of bare pattern codes.
+
+None of this touches `unique_id`, `entity_id`, the verification pipeline,
+press-timing semantics, or subentry data shape -- only presentation.
+`entity_id` is generated from `unique_id` once and never regenerated, so
+it is unaffected either way. The DISPLAYED name, however, is not frozen:
+Home Assistant recomputes it from the live translation on every restart
+or reload for any entity the user has not manually renamed, so an
+already-commissioned switch automatically starts showing "Button A0"
+after upgrading -- no re-add, no manual rename needed. An entity the user
+*has* manually renamed in the UI keeps that custom name, exactly HA's
+normal rename-wins behavior.
+
+### Safe user-visible test
+
+1. On an already-commissioned switch (created before this upgrade),
+   restart Home Assistant (or reload this integration's config entry).
+   Open the device page's Events card and confirm each button event now
+   shows a button icon and reads "Button A0" (or "Painike A0" in a
+   Finnish-language installation) instead of the bare "A0".
+2. Press a button and confirm the entity's last-event description reads
+   as a translated phrase ("Short press"/"Lyhyt painallus") rather than
+   the raw `short_press`.
+3. From **Settings → Automations → Create automation → Add trigger →
+   Device**, pick this switch's device and confirm the button picker
+   reads "Button A0" / "Buttons A0+B0 together" (or the Finnish
+   equivalents) rather than bare pattern codes, and that selecting one
+   and saving still fires correctly end-to-end.
+4. Rename one button entity manually in the UI, then restart Home
+   Assistant again. Confirm that entity keeps your custom name while
+   every other, never-renamed entity still shows the new "Button …" name.
+
 ## Test installation with HACS
 
 Requires Home Assistant **2025.7.0** or newer (Phase 5A's per-switch

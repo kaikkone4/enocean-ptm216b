@@ -50,13 +50,20 @@ now-stale registry entries (B0, B1, A0+B0, A1+B1) for that subentry, and
 only this platform's (domain ``event``) entities for that subentry --
 never a sensor-platform entity or another subentry's entities. See
 ``tests/test_event_entities.py``'s orphan-cleanup-on-reload test.
+
+Phase 6: entity naming/iconography were reworked to match the official Hue
+integration's "Friends of Hue" button event entities (device_class,
+translation-key-based naming, translated ``event_type`` state-attribute
+labels) so a commissioned switch's device page presents the same way --
+see :class:`Ptm216bButtonEventEntity`'s own docstring for the full
+before/after and the verified entity-registry renaming behavior.
 """
 
 from __future__ import annotations
 
 from typing import Callable
 
-from homeassistant.components.event import EventEntity
+from homeassistant.components.event import EventDeviceClass, EventEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_DEVICE_ID
 from homeassistant.core import HomeAssistant
@@ -211,9 +218,51 @@ class Ptm216bButtonEventEntity(EventEntity):
     ``tests/test_event_entities.py``'s explicit stable-unique_id test. The
     two combo patterns' unique_ids (``..._A0+B0``, ``..._A1+B1``) are new
     -- that is expected, not a migration concern.
+
+    Phase 6: naming and iconography follow the same pattern the official
+    Hue integration uses for its "Friends of Hue" button event entities
+    (``homeassistant.components.hue.event.HueButtonEventEntity``) so a
+    commissioned switch's device page reads the same way -- a per-button
+    "Events" card entry with a button icon and a translated last-event
+    description (e.g. Finnish "Lyhyt painallus" for ``short_press``).
+    ``_attr_device_class = EventDeviceClass.BUTTON`` is what produces the
+    button icon (no ``_attr_icon`` here -- the device class already
+    supplies one, and setting both would make the icon impossible to
+    theme/override through the standard device-class mechanism). Naming is
+    translation-driven -- ``_attr_translation_key = "button"`` plus, per
+    instance, ``_attr_translation_placeholders = {"button": pattern.value}``
+    -- rather than a hardcoded ``_attr_name``, so the frontend renders
+    "Button A0" (English) / "Painike A0" (Finnish) etc. from
+    ``strings.json``'s ``entity.event.button.name`` key, and each event's
+    ``state_attributes.event_type`` attribute renders its translated label
+    (e.g. "Short press"/"Lyhyt painallus") via that same block's
+    ``state_attributes.event_type.state`` map -- see
+    ``tests/test_translation_completeness.py``.
+
+    Verified against HA's own entity_platform/entity_registry code (see
+    ``tests/test_event_entities.py``'s
+    ``test_renaming_behavior_verified_against_ha_registry``):
+    ``entity_id`` is keyed on ``unique_id`` alone and is never regenerated
+    once registered, so it is completely unaffected by this change, exactly
+    as expected. The DISPLAYED friendly name, however, is NOT frozen at
+    first-registration the way one might assume -- ``EntityPlatform.
+    _async_add_entity`` recomputes ``entity.name`` (now translation-driven)
+    and writes it into the registry's ``original_name`` on every single
+    setup/reload, and ``Entity._friendly_name_internal`` reads the entity's
+    LIVE ``.name`` (not a frozen snapshot) whenever the registry has no
+    explicit user override (``registry_entry.name is None``). So a switch
+    commissioned before this upgrade automatically starts showing "Button
+    A0"/"Painike A0" the next time Home Assistant restarts or this config
+    entry reloads -- no re-add or manual rename needed. Only a switch whose
+    entity a user has explicitly renamed in the UI keeps that custom name
+    (``registry_entry.name`` overrides the live translated name in that
+    case) -- exactly HA's normal user-rename-wins behavior, unrelated to
+    this upgrade.
     """
 
     _attr_has_entity_name = True
+    _attr_device_class = EventDeviceClass.BUTTON
+    _attr_translation_key = "button"
     _attr_event_types = _EVENT_TYPES
 
     def __init__(
@@ -228,7 +277,7 @@ class Ptm216bButtonEventEntity(EventEntity):
         self._pattern = pattern
         handle = entry.runtime_data.commissioned_device_handle(canonical_address)
         self._attr_unique_id = f"{entry.entry_id}_{handle}_{pattern.value}"
-        self._attr_name = pattern.value
+        self._attr_translation_placeholders = {"button": pattern.value}
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, handle)},
             name=name,

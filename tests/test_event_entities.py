@@ -103,18 +103,165 @@ def test_event_entity_declares_all_four_press_action_event_types():
     )
 
     assert entity.event_types == ["press", "release", "short_press", "long_press"]
-    assert entity.name == "B1"
+    assert entity.translation_key == "button"
+    assert entity.translation_placeholders == {"button": "B1"}
 
 
-def test_event_entity_name_for_a_combo_pattern_is_its_plus_joined_value():
+def test_event_entity_translation_placeholder_for_a_combo_pattern_is_its_plus_joined_value():
     entry = _make_entry()
     entity = Ptm216bButtonEventEntity(
         entry, CANONICAL_ADDRESS, "Switch", ButtonPattern.A0_B0
     )
 
-    assert entity.name == "A0+B0"
+    assert entity.translation_placeholders == {"button": "A0+B0"}
     handle = entry.runtime_data.commissioned_device_handle(CANONICAL_ADDRESS)
     assert entity.unique_id == f"entry-id_{handle}_A0+B0"
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Hue-grade device-class + translation-based naming
+# ---------------------------------------------------------------------------
+
+
+def test_event_entity_has_the_button_device_class_for_every_pattern():
+    """``EventDeviceClass.BUTTON`` is what produces the Hue-style button
+    icon on the device page's Events card -- data-driven off
+    ``telegram.ButtonPattern`` so a future pattern addition is automatically
+    covered, matching this file's own convention (see
+    ``test_a0_a1_b0_b1_unique_ids_are_byte_for_byte_stable_across_the_upgrade``
+    and friends below, which already iterate the enum rather than
+    hardcoding a subset).
+    """
+    from homeassistant.components.event import EventDeviceClass
+
+    entry = _make_entry()
+    for pattern in ButtonPattern:
+        entity = Ptm216bButtonEventEntity(entry, CANONICAL_ADDRESS, "Switch", pattern)
+        assert entity.device_class == EventDeviceClass.BUTTON
+
+
+def test_event_entity_has_no_custom_icon_overriding_the_device_class_icon():
+    """A hardcoded ``_attr_icon`` would silently win over the device class's
+    icon (see ``homeassistant.helpers.entity.Entity.icon``'s own
+    precedence), defeating the whole point of setting
+    ``EventDeviceClass.BUTTON`` above -- so these entities must not define
+    one. (The diagnostic sensors in ``sensor.py`` keep their own explicit
+    icons; this assertion is scoped to the event platform only.)
+    """
+    entry = _make_entry()
+    entity = Ptm216bButtonEventEntity(
+        entry, CANONICAL_ADDRESS, "Switch", ButtonPattern.A0
+    )
+    assert not hasattr(entity, "_attr_icon")
+
+
+def test_event_entity_translation_key_and_placeholders_for_every_pattern():
+    """Data-driven off ``ButtonPattern`` -- every pattern's entity carries
+    translation_key="button" plus a placeholder mapping its own
+    pattern.value, matching ``strings.json``'s
+    ``entity.event.button.name`` == "Button {button}" key exactly.
+    """
+    entry = _make_entry()
+    for pattern in ButtonPattern:
+        entity = Ptm216bButtonEventEntity(entry, CANONICAL_ADDRESS, "Switch", pattern)
+        assert entity.translation_key == "button"
+        assert entity.translation_placeholders == {"button": pattern.value}
+        assert entity.has_entity_name is True
+
+
+async def test_renaming_behavior_verified_against_ha_registry(hass):
+    """Empirically verifies (against HA's real entity_platform/
+    entity_registry code, not an assumption) exactly what happens to an
+    already-commissioned switch's button entities across this upgrade:
+
+    * ``entity_id`` is generated once from ``unique_id`` and never
+      regenerated on a later ``async_get_or_create`` call -- completely
+      unaffected, as already covered by this file's unique_id-stability
+      tests.
+    * The DISPLAYED friendly name is NOT frozen at first registration: HA
+      recomputes ``entity.name`` (now translation-driven) on every setup
+      and uses it live whenever the entity has no explicit user-set
+      registry override -- so a pre-upgrade switch automatically starts
+      showing "Button A0" the next time Home Assistant restarts/reloads,
+      with no re-add or manual rename required.
+    * A switch whose entity a user HAS manually renamed in the UI keeps
+      that custom name -- the registry override wins over the live
+      translated name, exactly HA's normal behavior, unrelated to this
+      upgrade.
+    """
+    import logging
+    from datetime import timedelta
+
+    from homeassistant.components.event import EventEntity
+    from homeassistant.helpers import entity_platform
+    from homeassistant.helpers import entity_registry as er
+
+    class _OldStyleEntity(EventEntity):
+        """Stands in for this entity's pre-Phase-6 shape: a hardcoded
+        ``_attr_name`` instead of a translation key."""
+
+        _attr_has_entity_name = True
+        _attr_event_types = ["press"]
+
+        def __init__(self, unique_id: str) -> None:
+            self._attr_unique_id = unique_id
+            self._attr_name = "A0"
+
+    platform = entity_platform.EntityPlatform(
+        hass=hass,
+        logger=logging.getLogger(__name__),
+        domain="event",
+        platform_name=DOMAIN,
+        platform=None,
+        scan_interval=timedelta(seconds=30),
+        entity_namespace=None,
+    )
+    registry = er.async_get(hass)
+
+    # A pre-upgrade, never-renamed entity.
+    never_renamed = _OldStyleEntity("never-renamed-uid")
+    await platform.async_add_entities([never_renamed])
+    await hass.async_block_till_done()
+    assert registry.async_get(never_renamed.entity_id).name is None  # no override
+    assert hass.states.get(never_renamed.entity_id).attributes["friendly_name"] == "A0"
+
+    # A pre-upgrade entity the user explicitly renamed in the UI.
+    user_renamed = _OldStyleEntity("user-renamed-uid")
+    await platform.async_add_entities([user_renamed])
+    await hass.async_block_till_done()
+    registry.async_update_entity(user_renamed.entity_id, name="Kitchen light switch")
+
+    await platform.async_remove_entity(never_renamed.entity_id)
+    await platform.async_remove_entity(user_renamed.entity_id)
+
+    # Provide the real translated name this integration's strings.json
+    # supplies, exactly as HA's translation cache would once loaded.
+    platform.platform_translations = {
+        f"component.{DOMAIN}.entity.event.button.name": "Button {button}"
+    }
+
+    upgraded_never_renamed = Ptm216bButtonEventEntity(
+        _make_entry(), CANONICAL_ADDRESS, "Switch", ButtonPattern.A0
+    )
+    upgraded_never_renamed._attr_unique_id = "never-renamed-uid"
+    upgraded_user_renamed = Ptm216bButtonEventEntity(
+        _make_entry(), CANONICAL_ADDRESS, "Switch", ButtonPattern.A0
+    )
+    upgraded_user_renamed._attr_unique_id = "user-renamed-uid"
+    await platform.async_add_entities([upgraded_never_renamed, upgraded_user_renamed])
+    await hass.async_block_till_done()
+
+    assert upgraded_never_renamed.entity_id == never_renamed.entity_id
+    assert (
+        hass.states.get(upgraded_never_renamed.entity_id).attributes["friendly_name"]
+        == "Button A0"
+    )
+
+    assert upgraded_user_renamed.entity_id == user_renamed.entity_id
+    assert (
+        hass.states.get(upgraded_user_renamed.entity_id).attributes["friendly_name"]
+        == "Kitchen light switch"
+    )
 
 
 async def test_event_entity_registers_and_unregisters_with_the_switch_runtime():
