@@ -278,3 +278,110 @@ def test_starting_again_replaces_a_previous_window():
     cancel.assert_called_once_with()
     assert collector.state is EvidenceState.COLLECTING
     assert collector.callbacks_accepted == 0
+
+
+def test_state_listener_is_notified_on_start():
+    listener = Mock()
+    collector = EvidenceCollector(IDENTIFIER)
+    collector.state_listener = listener
+
+    collector.start(Mock(return_value=Mock()))
+
+    listener.assert_called_once_with()
+
+
+def test_state_listener_is_notified_when_the_timer_fires_the_window_closed():
+    """Regression test: the timer path must notify, not just record_callback."""
+    listener = Mock()
+    collector = EvidenceCollector(IDENTIFIER)
+    collector.state_listener = listener
+    schedule = Mock(return_value=Mock())
+    collector.start(schedule)
+    listener.reset_mock()
+
+    schedule.call_args.args[1]()
+
+    listener.assert_called_once_with()
+    assert collector.state is EvidenceState.NO_DATA
+
+
+def test_state_listener_is_notified_on_cap_reached_early_completion():
+    listener = Mock()
+    collector = EvidenceCollector(IDENTIFIER)
+    collector.state_listener = listener
+    schedule = Mock(return_value=Mock())
+    collector.start(schedule)
+    for counter in range(MAX_EVIDENCE_RECORDS - 1):
+        collector.record_callback(
+            IDENTIFIER,
+            _data(_frame(counter.to_bytes(4, "little"), 0x10)),
+            False,
+        )
+    listener.reset_mock()
+
+    collector.record_callback(
+        IDENTIFIER,
+        _data(_frame((999).to_bytes(4, "little"), 0x10)),
+        False,
+    )
+
+    listener.assert_called_once_with()
+    assert collector.state is EvidenceState.COMPLETE
+
+
+def test_state_listener_is_notified_on_hard_abort():
+    listener = Mock()
+    collector = EvidenceCollector(IDENTIFIER)
+    collector.state_listener = listener
+    collector.start(Mock(return_value=Mock()))
+    listener.reset_mock()
+
+    collector.record_callback(IDENTIFIER, _data(bytes(8)), False)
+
+    listener.assert_called_once_with()
+    assert collector.state is EvidenceState.ABORTED
+
+
+def test_state_listener_is_notified_on_cancel():
+    listener = Mock()
+    collector = EvidenceCollector(IDENTIFIER)
+    collector.state_listener = listener
+    collector.start(Mock(return_value=Mock()))
+    listener.reset_mock()
+
+    collector.cancel()
+
+    listener.assert_called_once_with()
+    assert collector.state is EvidenceState.INERT
+
+
+def test_state_listener_is_not_notified_by_a_non_matching_callback():
+    """A callback that changes nothing must not spuriously fire the listener."""
+    listener = Mock()
+    collector = EvidenceCollector(IDENTIFIER)
+    collector.state_listener = listener
+    collector.start(Mock(return_value=Mock()))
+    listener.reset_mock()
+
+    collector.record_callback(
+        OTHER_IDENTIFIER, _data(_frame(b"\x01\x00\x00\x00", 0x10)), False
+    )
+
+    listener.assert_not_called()
+
+
+def test_state_listener_is_not_notified_by_an_accepted_callback_without_a_transition():
+    """Per-record accumulation while still collecting is not a state change."""
+    listener = Mock()
+    collector = EvidenceCollector(IDENTIFIER)
+    collector.state_listener = listener
+    collector.start(Mock(return_value=Mock()))
+    listener.reset_mock()
+
+    collector.record_callback(
+        IDENTIFIER, _data(_frame(b"\x01\x00\x00\x00", 0x10)), False
+    )
+
+    listener.assert_not_called()
+    assert collector.state is EvidenceState.COLLECTING
+    assert collector.callbacks_accepted == 1

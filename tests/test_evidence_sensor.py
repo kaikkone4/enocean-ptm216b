@@ -101,3 +101,22 @@ async def test_evidence_sensor_subscribes_and_unsubscribes_the_runtime_listener(
 
     await sensor.async_will_remove_from_hass()
     assert entry.runtime_data.evidence_state_listener is None
+
+
+async def test_evidence_sensor_redraws_when_the_timer_ends_the_window():
+    """Regression: the sensor must not stay on "collecting" after the timer fires."""
+    entry = Mock(entry_id="entry-id")
+    entry.runtime_data = Ptm216bRuntimeData(_hmac_secret=SECRET)
+    entry.runtime_data.designated_identifier = IDENTIFIER
+    sensor = Ptm216bEvidenceCaptureSensor(entry)
+    sensor.async_write_ha_state = Mock()
+    await sensor.async_added_to_hass()
+    schedule = Mock(return_value=Mock())
+    entry.runtime_data.start_evidence_capture(schedule)
+    sensor.async_write_ha_state.reset_mock()
+    assert sensor.native_value == "collecting"
+
+    schedule.call_args.args[1]()
+
+    sensor.async_write_ha_state.assert_called_once_with()
+    assert sensor.native_value == "no_data"

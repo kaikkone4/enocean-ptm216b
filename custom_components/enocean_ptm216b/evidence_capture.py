@@ -38,6 +38,7 @@ ABORT_VALUE_LENGTH = 24
 
 EvidenceTimerCancel = Callable[[], None]
 EvidenceScheduler = Callable[[float, Callable[[], None]], EvidenceTimerCancel]
+EvidenceStateListener = Callable[[], None]
 
 _MANUFACTURER_ID_ECHO = (b"\xda\x03", b"\x03\xda")
 
@@ -98,6 +99,7 @@ class EvidenceCollector:
 
     designated_identifier: str = field(repr=False)
     state: EvidenceState = EvidenceState.INERT
+    state_listener: EvidenceStateListener | None = field(default=None, repr=False)
     _records: list[_CallbackRecord] = field(default_factory=list, repr=False)
     _manufacturer_data_keys: set[int] = field(default_factory=set, repr=False)
     _any_connectable_seen: bool = False
@@ -153,16 +155,16 @@ class EvidenceCollector:
         """Arm the single bounded 90-second collecting window."""
         self._cancel_timer()
         self._reset_transient_state()
-        self.state = EvidenceState.COLLECTING
         self._scheduler = schedule
         self._timer = schedule(EVIDENCE_CAPTURE_SECONDS, self._finish_window)
+        self._set_state(EvidenceState.COLLECTING)
 
     def cancel(self) -> None:
         """Cancel the window and discard all evidence state; return to inert."""
         self._cancel_timer()
         self._reset_transient_state()
         self._scheduler = None
-        self.state = EvidenceState.INERT
+        self._set_state(EvidenceState.INERT)
 
     def record_callback(
         self,
@@ -240,21 +242,23 @@ class EvidenceCollector:
         self._cancel_timer()
         self._scheduler = None
         self._discard_raw_material()
-        self.state = EvidenceState.COMPLETE
+        self._set_state(EvidenceState.COMPLETE)
 
     def _finish_window(self) -> None:
         """Timer fired: end the window as complete or no_data."""
         self._timer = None
         self._scheduler = None
         self._discard_raw_material()
-        self.state = EvidenceState.COMPLETE if self._records else EvidenceState.NO_DATA
+        self._set_state(
+            EvidenceState.COMPLETE if self._records else EvidenceState.NO_DATA
+        )
 
     def _abort(self) -> None:
         """Fail closed: discard everything and enter the aborted terminal state."""
         self._cancel_timer()
         self._scheduler = None
         self._reset_transient_state()
-        self.state = EvidenceState.ABORTED
+        self._set_state(EvidenceState.ABORTED)
 
     def _reset_transient_state(self) -> None:
         """Clear every retained record and transient raw-material field."""
@@ -275,3 +279,13 @@ class EvidenceCollector:
         self._timer = None
         if timer is not None:
             timer()
+
+    def _set_state(self, state: EvidenceState) -> None:
+        """Transition state and notify the listener on every transition.
+
+        Covers every path that changes ``state``: start, cancel, abort,
+        the early cap-reached completion, and the timer-driven window end.
+        """
+        self.state = state
+        if self.state_listener is not None:
+            self.state_listener()

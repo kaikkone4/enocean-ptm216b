@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EnOcean PTM 216B BLE",
+        "description": "Add the passive EnOcean PTM 216B BLE observer. This creates a single observation-only entry; no pairing, commissioning, or key entry happens here."
+      },
+      "reconfigure": {
+        "title": "Manual capture",
+        "description": "Choose a bounded, manually started capture. Setup and passive observation never start either of these on their own.",
+        "menu_options": {
+          "designation_capture": "Designation capture",
+          "evidence_capture": "Evidence capture"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Device is already configured",
+      "designation_capture_started": "Designation capture started. Watch the Designation capture sensor for the baseline, press, and confirmation phases.",
+      "evidence_capture_started": "Evidence capture started. Watch the Evidence capture sensor during the 90-second collecting window.",
+      "no_designated_device": "No device has been designated yet in this session. Run designation capture first, then start evidence capture again."
+    }
+  }
+}

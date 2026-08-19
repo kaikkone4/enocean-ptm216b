@@ -66,8 +66,18 @@ class Ptm216bRuntimeData:
     )
 
     def start_designation_capture(self, schedule: CaptureScheduler) -> None:
-        """Start a bounded baseline only in response to a manual request."""
-        self.cancel_evidence_capture()
+        """Start a bounded baseline only in response to a manual request.
+
+        Cancels a *running* evidence capture only. A completed evidence
+        window (``complete``/``no_data``/``aborted``) is left untouched so
+        its structural summary survives until the user starts a new
+        evidence capture or the entry is unloaded.
+        """
+        if (
+            self.evidence_collector is not None
+            and self.evidence_collector.state is EvidenceState.COLLECTING
+        ):
+            self.cancel_evidence_capture()
         cancel_timer = self.capture_timer
         if cancel_timer is not None:
             cancel_timer()
@@ -232,9 +242,11 @@ class Ptm216bRuntimeData:
             self.cancel_designation_capture()
         self.cancel_evidence_capture()
         collector = EvidenceCollector(self.designated_identifier)
-        collector.start(schedule)
+        collector.state_listener = self._notify_evidence_state
+        # Assign before start() so the listener's first (COLLECTING) call
+        # already sees this collector on the runtime data it reads from.
         self.evidence_collector = collector
-        self._notify_evidence_state()
+        collector.start(schedule)
         return True
 
     def cancel_evidence_capture(self) -> None:
@@ -243,7 +255,6 @@ class Ptm216bRuntimeData:
         if collector is None:
             return
         collector.cancel()
-        self._notify_evidence_state()
 
     def record_evidence_callback(
         self,
@@ -251,7 +262,14 @@ class Ptm216bRuntimeData:
         manufacturer_data: dict[int, bytes],
         connectable: bool,
     ) -> None:
-        """Feed one matching callback into the active evidence collector, if any."""
+        """Feed one matching callback into the active evidence collector, if any.
+
+        Notifies explicitly so a live ``callbacks_accepted`` increment is
+        redrawn even when the callback did not itself trigger a state
+        transition (a state transition already self-notifies via the
+        collector's own ``state_listener``, making this a harmless
+        no-op double notification in that case).
+        """
         collector = self.evidence_collector
         if collector is None or collector.state is not EvidenceState.COLLECTING:
             return
