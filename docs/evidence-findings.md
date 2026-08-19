@@ -84,31 +84,33 @@ encodes as its accepted single-button-bit values, and what
 (`status_xor_values`) was designed to expose without ever exposing an
 absolute status byte.
 
-## Partially resolved: flagged for live confirmation
+## Resolved live after Phase 4 commissioning (2026-08-19)
 
-### Button bit mapping — absolute bit0 polarity
+### Button bit mapping — absolute bit0 polarity: LIVE-PROVEN
 
-The manual states bit0 = 1 means "press", but this capture only proves the
-*relative* toggle (bit0 flips by exactly 1 between a button's press and its
-release) — it does not prove which of the two states is "press" versus
-"release" in absolute terms. `telegram.Ptm216bButtonState.is_press` follows
-the manual's documented polarity and is explicitly flagged in its docstring
-as manual-sourced, not live-proven. This remains open pending a live test
-that can correlate an actual physical press action with its resulting bit0
-value (out of scope for this pure-logic phase).
+The manual states bit0 = 1 means "press". Originally this capture only
+proved the *relative* toggle (bit0 flips by exactly 1 between a button's
+press and its release). After Phase 4 commissioning of the reference
+switch, a press-and-hold test on live, MIC-verified telegrams confirmed the
+event fired at push-down is `press` — the manual's polarity is correct as
+implemented in `telegram.Ptm216bButtonState.is_press`. No structural or
+byte-level material was recorded for this proof; it is a user-observed
+event-ordering fact.
+
+### Address representation / nonce byte order: LIVE-PROVEN
+
+`crypto._over_air_address_bytes` implements the LE-reversal of
+`identity.canonicalize_address`'s display-order output, per User Manual
+section 5.1.2. In this phase it was proven only synthetically — via RFC
+3610 official vectors (Oracle A) and an independent from-scratch CCM
+implementation (Oracle B), see `tests/test_crypto.py` and
+`tests/ccm_reference.py`. After Phase 4 commissioning, MIC verification
+succeeded on live telegrams from the reference device (Verified counter
+advancing, events firing), which proves the reversal direction — and,
+incidentally, that the factory security key from the device label remained
+valid on a Casambi-paired PTM 216B.
 
 ## Still open / explicitly unsupported
-
-- **Address representation / nonce byte order.** `crypto._over_air_address_bytes`
-  implements the LE-reversal of `identity.canonicalize_address`'s
-  display-order output, per User Manual section 5.1.2. This is proven only
-  synthetically in this phase — via RFC 3610 official vectors (Oracle A) and
-  an independent from-scratch CCM implementation (Oracle B), see
-  `tests/test_crypto.py` and `tests/ccm_reference.py` — and is explicitly
-  documented as the one fact that only a live key/MIC test against a real
-  device, in a future commissioning/key-provisioning phase, can prove. It is
-  isolated to that single function so a future falsification changes exactly
-  one place.
 - **Optional-data modes (10/11/13-byte forms).** Still unobserved on the
   reference device. `telegram.parse_data_telegram` continues to reject every
   length other than the observed 9-byte authentication-only form, per
