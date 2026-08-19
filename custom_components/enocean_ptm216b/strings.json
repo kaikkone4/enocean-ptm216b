@@ -82,8 +82,8 @@
       },
       "progress": {
         "detect_baseline": "Keep this and every other EnOcean switch quiet for a few seconds while a quiet baseline is established.",
-        "detect_press": "Press the switch three times, about two seconds apart, on the one button you want to detect.",
-        "detect_confirmation": "Repeat the same three presses on the same button, to confirm."
+        "detect_press": "Press the same button three times, about two seconds apart, then wait for the next instruction. It does not matter which button you pick — the whole switch is commissioned at once, not just that button.",
+        "detect_confirmation": "Repeat the same three presses on the same button to confirm, then wait."
       },
       "error": {
         "invalid_commissioning_data": "Could not read an address, security key, and name from the photo, QR/label text, or the manual fields. Check the photo/QR text, or fill in the address, the 32-character security key, and a name.",

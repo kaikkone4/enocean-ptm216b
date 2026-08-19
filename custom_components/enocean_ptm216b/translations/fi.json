@@ -82,8 +82,8 @@
       },
       "progress": {
         "detect_baseline": "Pidä tämä ja kaikki muut EnOcean-kytkimet hiljaa muutaman sekunnin ajan, jotta hiljainen lähtötaso saadaan mitattua.",
-        "detect_press": "Paina kytkintä kolme kertaa, noin kahden sekunnin välein, siitä yhdestä painikkeesta, jonka haluat tunnistaa.",
-        "detect_confirmation": "Toista samat kolme painallusta samasta painikkeesta vahvistukseksi."
+        "detect_press": "Paina samaa nappia kolme kertaa, noin kahden sekunnin välein, ja odota sitten seuraavaa ohjetta. Nappia ei tarvitse valita erikseen — koko kytkin lisätään kerralla, ei vain yhtä nappia.",
+        "detect_confirmation": "Toista samat kolme painallusta samaan nappiin vahvistukseksi, ja odota."
       },
       "error": {
         "invalid_commissioning_data": "Osoitetta, turva-avainta ja nimeä ei saatu luettua kuvasta, QR-/tarratekstistä eikä manuaalisista kentistä. Tarkista kuva/QR-teksti, tai täytä osoite, 32-merkkinen turva-avain ja nimi.",
