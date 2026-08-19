@@ -191,7 +191,7 @@ async def test_commissioned_entity_state_and_attributes_never_leak_material(hass
         for entity in (*events.added, *sensors.added)
         if hasattr(entity, "_canonical_address")
     ]
-    assert len(commissioned_entities) == 6  # 4 event entities + 2 diagnostic sensors
+    assert len(commissioned_entities) == 8  # 6 event entities + 2 diagnostic sensors
     for entity in commissioned_entities:
         serialized = repr((entity.unique_id, entity.device_info))
         assert CANONICAL_ADDRESS not in serialized

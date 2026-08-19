@@ -20,7 +20,8 @@ As of Phase 4 (see below), the integration decodes and authenticates telegrams f
 - the advertisement matches the exact supported PTM 216B telegram shape
 - its 32-bit signature (MIC) verifies against that switch's commissioned key
 - its sequence counter is strictly greater than the durably persisted counter for that switch (replay/duplicate protection)
-- its switch-status byte decodes to exactly one button
+- its switch-status byte decodes to one of the six accepted button patterns (see
+  "Six button states and 1-rocker aliasing" below)
 
 Any other advertisement -- from an uncommissioned switch, or one that fails any gate above -- never produces an event, state change, counter advance, or diagnostic byte leakage. There is no unauthenticated fallback at any gate.
 
@@ -185,15 +186,18 @@ this exact order, before anything is emitted or any durable state changes:
    counter is a duplicate (authenticated no-op); a lower counter is a replay
    reject. Both are rejected with no counter advance.
 4. **Status** — only once shape, MIC, and counter all pass does the
-   switch-status byte get decoded. It must resolve to exactly one button
-   (A0, A1, B0, or B1); reserved, zero, or multiple-button bytes are
-   rejected — even though the counter has, by this point, already durably
-   advanced (that is the correct, deliberate order: counter/replay
-   protection does not depend on whether the status byte turns out to be
-   decodable).
+   switch-status byte get decoded. It must resolve to one of the six
+   accepted button patterns (A0, A1, B0, B1, A0+B0, or A1+B1 — see "Six
+   button states and 1-rocker aliasing" below); reserved bits, zero button
+   bits, or any other button-bit combination (the diagonals A0+B1/A1+B0, any
+   3-bit combo, or the 4-bit combo) are rejected — even though the counter
+   has, by this point, already durably advanced (that is the correct,
+   deliberate order: counter/replay protection does not depend on whether
+   the status byte turns out to be decodable).
 
 Only a telegram that passes all four gates fires an event, on the one event
-entity matching its decoded button.
+entity matching its decoded (and, for a one-rocker switch, aliased) button
+pattern.
 
 ### First-trust policy: no unauthenticated fallback
 
@@ -258,11 +262,11 @@ reappear) automatically — no separate reload step.
 ### Rocker count
 
 Most PTM 216B modules have two rocker button pairs (A0/A1 and B0/B1); some
-have only one (A0/A1). Choosing "1" in the wizard creates only the A0/A1
-event entities; choosing "2" (the default) creates all four, as before. A
-B0/B1 telegram from a one-rocker switch is still MIC-verified and counts
-toward **Verified telegrams** — it simply has no event entity to fire, so
-nothing observable happens for it.
+have only one full-width rocker plate (A0/A1 only). Choosing "1" in the
+wizard creates only the A0/A1 event entities; choosing "2" (the default)
+creates all six — see "Six button states and 1-rocker aliasing" below for
+what those six are and exactly how a one-rocker switch's B0/B1/combo
+telegrams are silently aliased to A0/A1 rather than simply firing nothing.
 
 ### Removing a switch
 
@@ -316,11 +320,13 @@ auto-installed `pyrxing`.
 
 ### What each commissioned switch exposes
 
-- One **event** entity per rocker button (A0, A1, and, for two-rocker
-  switches, B0, B1), each firing `press`, `release`, and, as of Phase 5B,
-  the derived `short_press`/`long_press` -- see "Short/long press and
-  device triggers" below. Only the one entity matching the decoded button
-  fires per accepted telegram.
+- One **event** entity per button pattern — A0, A1 always, plus, for
+  two-rocker switches, B0, B1, and the two combo patterns A0+B0, A1+B1 (six
+  total; see "Six button states and 1-rocker aliasing" below) — each firing
+  `press`, `release`, and, as of Phase 5B, the derived
+  `short_press`/`long_press` -- see "Short/long press and device triggers"
+  below. Only the one entity matching the decoded (and, for a one-rocker
+  switch, aliased) pattern fires per accepted telegram.
 - **Verified telegrams** (diagnostic sensor): counts only telegrams that
   passed every gate above (shape, MIC, counter, and, for a button this
   switch has an event entity for, status). Does not include first-trust
@@ -351,9 +357,10 @@ private commissioning store.
    should appear as an event on the corresponding event entity.
 6. Watch the **Verified telegrams** and **Rejected telegrams** sensors move
    as expected: verified increments once per real press/release that
-   produces an event (or, for a one-rocker switch, once per verified B0/B1
-   telegram too, even though nothing fires); rejected increments for
-   anything discarded.
+   produces an event (on a one-rocker switch this includes every B0/B1/combo
+   telegram too, since those are now aliased to the A0/A1 entity rather than
+   firing nothing — see "Six button states and 1-rocker aliasing" below);
+   rejected increments for anything discarded.
 7. **Polarity check**: press and *hold* one button. The event fired at the
    moment you push down should be `press`; the one fired when you release
    should be `release`. If it is the other way around, please report it —
@@ -435,6 +442,93 @@ still usable directly for anyone who prefers them.
    and repeat step 2 with a shorter hold -- confirm `long_press` now
    fires sooner, with no recommissioning prompt and no address/key field
    shown.
+
+## Six button states and 1-rocker aliasing (Phase 5D)
+
+A PTM 216B's switch-status byte can report six real, distinct button
+patterns, not just the four single-button ones (A0, A1, B0, B1). The other
+two -- **A0+B0** and **A1+B1** -- are genuine, bindable combo patterns: a
+single energy bow (the physical spring mechanism behind one rocker) drives
+both of that rocker's channels at once, in the same telegram. Every other
+multi-bit combination (the two diagonals A0+B1/A1+B0, any 3-bit combo, or
+the 4-bit combo) has no physical rocker action that could produce it and is
+still rejected fail-closed, exactly like before.
+
+| Pattern | Button bits (bit4..bit1, press/release bit0 excluded) | How it happens |
+| --- | --- | --- |
+| A0 | `0b00010` | rocker "A"'s "0" half pressed alone |
+| A1 | `0b00100` | rocker "A"'s "1" half pressed alone |
+| B0 | `0b01000` | rocker "B"'s "0" half pressed alone |
+| B1 | `0b10000` | rocker "B"'s "1" half pressed alone |
+| A0+B0 | `0b01010` | both "0" halves actuate in the same telegram |
+| A1+B1 | `0b10100` | both "1" halves actuate in the same telegram |
+
+Per User Manual Figure 16: bit1 = A0, bit2 = A1, bit3 = B0, bit4 = B1 (bit0
+is the separate press/release toggle, unrelated to which button); see
+`telegram.py`'s `_BUTTON_BIT_PATTERNS` for the source of truth.
+
+### Combo patterns only register when both rockers actuate together
+
+**A0+B0 and A1+B1 fire only when both halves of a rocker genuinely actuate
+within the SAME telegram** -- this is a hardware property (one energy bow,
+one telegram), not something this integration infers from timing across
+two separate telegrams. On a **two-rocker switch**, this means:
+
+- pressing A0 alone still fires only the A0 entity, never A0+B0
+- a genuinely simultaneous press of both the A0 and B0 halves of one rocker
+  fires only the A0+B0 entity -- not A0, and not B0
+- A0+B0/A1+B1 get their own independent short/long-press timing and their
+  own device-trigger subtype, exactly like any single-button pattern (see
+  `press_timing.py`)
+
+One documented edge case: if a combo press's release telegram instead
+decodes as a plain single-button pattern (e.g. a genuinely simultaneous
+press's A0+B0 telegram is followed by a release telegram that only carries
+A0, because the user's finger lifted off one half microseconds before the
+other), that release fires only the plain button's `release` -- no
+`short_press` for it -- and the combo's own open press is left orphaned,
+exactly like any other lost-release case (see "Radio-loss behavior"
+above). This falls out of the same generic per-pattern state machine with
+no special-case code; see `tests/test_press_timing.py`'s
+combo/partial-release test.
+
+### 1-rocker aliasing
+
+A one-rocker switch (a single full-width rocker plate, chosen as "1" in the
+Add-device wizard's rocker count -- see "Rocker count" above) only ever has
+two logical buttons, A0 and A1 -- but its raw telegrams can still decode to
+any of six patterns, because the same physical mechanism that produces
+A0+B0/A1+B1 on a two-rocker switch's genuinely-simultaneous press is *always*
+what happens on a one-rocker switch's single energy bow. This integration
+silently aliases all three raw patterns for each logical button to the one
+entity that exists:
+
+- **A0, B0, or A0+B0** → fires the **A0** entity
+- **A1, B1, or A1+B1** → fires the **A1** entity
+
+This normalization happens in exactly one place --
+`telegram.normalize_button_pattern`, applied by
+`runtime_data.CommissionedSwitchRuntime.record_verified_and_fire` before
+the pattern ever reaches `press_timing.py`, an event entity, or a device
+trigger -- so it never matters exactly where on the wide plate the user
+pressed, and every layer downstream of that one point only ever sees the
+two logical patterns a one-rocker switch actually has.
+
+### Safe user-visible test
+
+1. On a **two-rocker** commissioned switch, press A0 alone a few times.
+   Confirm only the A0 entity fires -- never A0+B0.
+2. If you can press both halves of one rocker together (physically or via
+   the module's own combo-actuation behavior), confirm the A0+B0 (or
+   A1+B1) entity fires instead of A0 and B0 individually.
+3. Add a device trigger for the A0+B0 (or A1+B1) subtype from the
+   automation editor and confirm it fires end-to-end on a combo press.
+4. On a **one-rocker** commissioned switch, press the plate's "A" side a
+   few times. Confirm only the A0 entity fires, and there is no B0 or
+   A0+B0 entity to find in the entity list at all.
+5. Verify **Verified telegrams** still increments normally for a
+   one-rocker switch's presses -- aliasing changes only which entity
+   fires, never whether a telegram counts as verified.
 
 ## Test installation with HACS
 

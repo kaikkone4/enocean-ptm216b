@@ -16,15 +16,15 @@ from custom_components.enocean_ptm216b.press_timing import (
     PressAction,
     PressTimingTracker,
 )
-from custom_components.enocean_ptm216b.telegram import Button, Ptm216bButtonState
+from custom_components.enocean_ptm216b.telegram import ButtonPattern, Ptm216bButtonState
 
 
-def _press(button: Button = Button.A0) -> Ptm216bButtonState:
-    return Ptm216bButtonState(button=button, is_press=True)
+def _press(pattern: ButtonPattern = ButtonPattern.A0) -> Ptm216bButtonState:
+    return Ptm216bButtonState(pattern=pattern, is_press=True)
 
 
-def _release(button: Button = Button.A0) -> Ptm216bButtonState:
-    return Ptm216bButtonState(button=button, is_press=False)
+def _release(pattern: ButtonPattern = ButtonPattern.A0) -> Ptm216bButtonState:
+    return Ptm216bButtonState(pattern=pattern, is_press=False)
 
 
 def _tracker(
@@ -34,7 +34,7 @@ def _tracker(
     schedule = Mock(return_value=cancel)
     tracker = PressTimingTracker(threshold_ms=threshold_ms, scheduler=schedule)
     actions: list[PressAction] = []
-    tracker.set_listener(Button.A0, actions.append)
+    tracker.set_listener(ButtonPattern.A0, actions.append)
     return tracker, schedule, actions
 
 
@@ -132,7 +132,7 @@ def test_new_press_after_previous_long_press_already_fired_resets_cleanly():
     schedule.call_args.args[1]()  # long_press fires; its release is then lost
     actions.clear()
 
-    tracker.handle_button_state(_press())  # new press for the same button
+    tracker.handle_button_state(_press())  # new press for the same pattern
 
     assert actions == [PressAction.PRESS]  # no retroactive or duplicate action
 
@@ -203,21 +203,21 @@ def test_min_and_max_threshold_bounds_are_both_usable():
 
 
 # ---------------------------------------------------------------------------
-# Per-button independence
+# Per-pattern independence
 # ---------------------------------------------------------------------------
 
 
-def test_buttons_are_tracked_independently():
+def test_patterns_are_tracked_independently():
     schedule = Mock(return_value=Mock())
     tracker = PressTimingTracker(scheduler=schedule)
     a0_actions: list[PressAction] = []
     a1_actions: list[PressAction] = []
-    tracker.set_listener(Button.A0, a0_actions.append)
-    tracker.set_listener(Button.A1, a1_actions.append)
+    tracker.set_listener(ButtonPattern.A0, a0_actions.append)
+    tracker.set_listener(ButtonPattern.A1, a1_actions.append)
 
-    tracker.handle_button_state(_press(Button.A0))
-    tracker.handle_button_state(_press(Button.A1))
-    tracker.handle_button_state(_release(Button.A0))
+    tracker.handle_button_state(_press(ButtonPattern.A0))
+    tracker.handle_button_state(_press(ButtonPattern.A1))
+    tracker.handle_button_state(_release(ButtonPattern.A0))
 
     assert a0_actions == [
         PressAction.PRESS,
@@ -228,13 +228,82 @@ def test_buttons_are_tracked_independently():
 
 
 # ---------------------------------------------------------------------------
+# Combo patterns (Phase 5D): a combo pattern is just another dict key here --
+# no special-case code anywhere in this module.
+# ---------------------------------------------------------------------------
+
+
+def test_combo_pattern_short_press():
+    schedule = Mock(return_value=Mock())
+    tracker = PressTimingTracker(scheduler=schedule)
+    actions: list[PressAction] = []
+    tracker.set_listener(ButtonPattern.A0_B0, actions.append)
+
+    tracker.handle_button_state(_press(ButtonPattern.A0_B0))
+    tracker.handle_button_state(_release(ButtonPattern.A0_B0))
+
+    assert actions == [
+        PressAction.PRESS,
+        PressAction.SHORT_PRESS,
+        PressAction.RELEASE,
+    ]
+
+
+def test_combo_pattern_long_press():
+    schedule = Mock(return_value=Mock())
+    tracker = PressTimingTracker(scheduler=schedule)
+    actions: list[PressAction] = []
+    tracker.set_listener(ButtonPattern.A1_B1, actions.append)
+
+    tracker.handle_button_state(_press(ButtonPattern.A1_B1))
+    schedule.call_args.args[1]()  # the hold timer elapses
+
+    assert actions == [PressAction.PRESS, PressAction.LONG_PRESS]
+
+
+def test_combo_press_then_partial_single_button_release_orphans_the_combo():
+    """A press decoded as A0_B0 (both rockers actuated in one telegram)
+    followed by a release that instead decodes to plain A0 (e.g. the
+    user's finger lifted off one rocker microseconds before the other, so
+    the release telegram only carries A0) must fire only a raw ``release``
+    for A0 -- no ``short_press`` for A0, and A0_B0's own open press is left
+    silently orphaned (no further event for it) until/unless another
+    A0_B0 press arrives. This is the SAME generic orphan mechanism as any
+    lost-release case -- see press_timing.py's module docstring -- proven
+    here explicitly for the combo/partial-release case the phase spec
+    calls out by name.
+    """
+    schedule = Mock(return_value=Mock())
+    tracker = PressTimingTracker(scheduler=schedule)
+    combo_actions: list[PressAction] = []
+    a0_actions: list[PressAction] = []
+    tracker.set_listener(ButtonPattern.A0_B0, combo_actions.append)
+    tracker.set_listener(ButtonPattern.A0, a0_actions.append)
+
+    tracker.handle_button_state(_press(ButtonPattern.A0_B0))
+    tracker.handle_button_state(_release(ButtonPattern.A0))
+
+    assert combo_actions == [PressAction.PRESS]  # no short_press, no release
+    assert a0_actions == [PressAction.RELEASE]  # only the raw release, no short_press
+
+    # A0_B0's open press is still there, untouched, until a real A0_B0
+    # press resets it.
+    assert ButtonPattern.A0_B0 in tracker._open
+
+    combo_actions.clear()
+    tracker.handle_button_state(_press(ButtonPattern.A0_B0))
+
+    assert combo_actions == [PressAction.PRESS]  # fresh press, orphan cleared
+
+
+# ---------------------------------------------------------------------------
 # Listener management
 # ---------------------------------------------------------------------------
 
 
 def test_set_listener_none_clears_it_and_suppresses_future_emits():
     tracker, _schedule, actions = _tracker()
-    tracker.set_listener(Button.A0, None)
+    tracker.set_listener(ButtonPattern.A0, None)
 
     tracker.handle_button_state(_press())
 
@@ -245,8 +314,8 @@ def test_no_listener_registered_is_a_silent_no_op():
     schedule = Mock(return_value=Mock())
     tracker = PressTimingTracker(scheduler=schedule)
 
-    tracker.handle_button_state(_press(Button.A0))  # must not raise
-    tracker.handle_button_state(_release(Button.A0))
+    tracker.handle_button_state(_press(ButtonPattern.A0))  # must not raise
+    tracker.handle_button_state(_release(ButtonPattern.A0))
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +326,7 @@ def test_no_listener_registered_is_a_silent_no_op():
 def test_no_scheduler_configured_still_emits_press_and_release_but_never_long_press():
     tracker = PressTimingTracker()  # scheduler defaults to None
     actions: list[PressAction] = []
-    tracker.set_listener(Button.A0, actions.append)
+    tracker.set_listener(ButtonPattern.A0, actions.append)
 
     tracker.handle_button_state(_press())
     tracker.handle_button_state(_release())
@@ -278,11 +347,11 @@ def test_clear_cancels_every_open_timer():
     cancel = Mock()
     schedule = Mock(return_value=cancel)
     tracker = PressTimingTracker(scheduler=schedule)
-    tracker.set_listener(Button.A0, Mock())
-    tracker.set_listener(Button.A1, Mock())
+    tracker.set_listener(ButtonPattern.A0, Mock())
+    tracker.set_listener(ButtonPattern.A1, Mock())
 
-    tracker.handle_button_state(_press(Button.A0))
-    tracker.handle_button_state(_press(Button.A1))
+    tracker.handle_button_state(_press(ButtonPattern.A0))
+    tracker.handle_button_state(_press(ButtonPattern.A1))
 
     tracker.clear()
 
@@ -293,7 +362,7 @@ def test_clear_leaves_the_tracker_ready_for_a_fresh_press():
     schedule = Mock(return_value=Mock())
     tracker = PressTimingTracker(scheduler=schedule)
     actions: list[PressAction] = []
-    tracker.set_listener(Button.A0, actions.append)
+    tracker.set_listener(ButtonPattern.A0, actions.append)
 
     tracker.handle_button_state(_press())
     tracker.clear()

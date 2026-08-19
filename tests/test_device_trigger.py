@@ -82,17 +82,18 @@ async def _switch_device(
 # ---------------------------------------------------------------------------
 
 
-async def test_async_get_triggers_offers_all_sixteen_for_a_two_rocker_switch(hass):
+async def test_async_get_triggers_offers_all_twenty_four_for_a_two_rocker_switch(hass):
+    """Phase 5D: six patterns (A0/A1/B0/B1/A0+B0/A1+B1) x four actions."""
     _entry, device = await _switch_device(hass, rockers=2)
 
     triggers = await device_trigger.async_get_triggers(hass, device.id)
 
-    assert len(triggers) == 16
+    assert len(triggers) == 24
     pairs = {(t["type"], t["subtype"]) for t in triggers}
     assert pairs == {
-        (action, button)
+        (action, pattern)
         for action in ("press", "release", "short_press", "long_press")
-        for button in ("A0", "A1", "B0", "B1")
+        for pattern in ("A0", "A1", "B0", "B1", "A0+B0", "A1+B1")
     }
     assert all(t["platform"] == "device" for t in triggers)
     assert all(t["domain"] == DOMAIN for t in triggers)
@@ -157,6 +158,28 @@ async def test_async_validate_trigger_config_accepts_a_valid_trigger(hass):
 
     assert validated["type"] == "short_press"
     assert validated["subtype"] == "B1"
+
+
+async def test_async_validate_trigger_config_accepts_a_combo_subtype(hass):
+    _entry, device = await _switch_device(hass, rockers=2)
+
+    validated = await device_trigger.async_validate_trigger_config(
+        hass, _config(device.id, "press", "A0+B0")
+    )
+
+    assert validated["type"] == "press"
+    assert validated["subtype"] == "A0+B0"
+
+
+async def test_async_validate_trigger_config_rejects_a_combo_subtype_on_a_one_rocker_switch(
+    hass,
+):
+    _entry, device = await _switch_device(hass, rockers=1)
+
+    with pytest.raises(InvalidDeviceAutomationConfig):
+        await device_trigger.async_validate_trigger_config(
+            hass, _config(device.id, "press", "A0+B0")
+        )
 
 
 async def test_async_validate_trigger_config_rejects_an_unknown_action_type(hass):
@@ -288,3 +311,29 @@ async def test_attach_trigger_long_press_roundtrip(hass):
     await hass.async_block_till_done()
 
     assert len(calls) == 1
+
+
+async def test_attach_trigger_combo_subtype_roundtrip(hass):
+    """A combo pattern (A0+B0) attaches and fires an automation end-to-end,
+    exactly like a single-button pattern -- proving this generalizes with
+    no special-case code, per this module's own docstring.
+    """
+    _entry, device = await _switch_device(hass, rockers=2)
+    calls = async_mock_service(hass, "test", "automation")
+    await _automation_for(hass, device.id, "press", "A0+B0")
+
+    _fire(hass, device.id, "A0+B0", "press")
+    await hass.async_block_till_done()
+
+    assert len(calls) == 1
+
+
+async def test_attach_trigger_combo_subtype_does_not_fire_for_the_plain_button(hass):
+    _entry, device = await _switch_device(hass, rockers=2)
+    calls = async_mock_service(hass, "test", "automation")
+    await _automation_for(hass, device.id, "press", "A0+B0")
+
+    _fire(hass, device.id, "A0", "press")
+    await hass.async_block_till_done()
+
+    assert len(calls) == 0

@@ -12,8 +12,11 @@ running exactly as before, alongside this pipeline, never instead of it.
 
 Gate order, matching the gate doc exactly: exact 9-byte supported shape ->
 MIC verified -> counter strictly greater than the durably persisted value ->
-status decoded to exactly one button. No stage after a failing gate ever
-runs. Shape and MIC verification are synchronous and share no mutable
+status decoded to one of the six accepted button patterns (see
+``telegram.ButtonPattern``: the four single-button patterns, plus the two
+same-letter combo patterns a single-rocker-plate press or a genuinely
+simultaneous two-rocker press can produce). No stage after a failing gate
+ever runs. Shape and MIC verification are synchronous and share no mutable
 per-switch state, so a shape- or MIC-rejected telegram is counted and
 discarded with no async hop at all (gate doc item 4: no state update on MIC
 failure). Only once a telegram's MIC verifies does this module hand off to

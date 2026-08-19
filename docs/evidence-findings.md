@@ -110,6 +110,31 @@ advancing, events firing), which proves the reversal direction — and,
 incidentally, that the factory security key from the device label remained
 valid on a Casambi-paired PTM 216B.
 
+## Phase 5D: multi-bit switch-status patterns (manual-sourced, pending live confirmation)
+
+As of Phase 5D, `telegram.interpret_switch_status` accepts two additional
+button-bit patterns beyond the four single-bit ones already live-proven
+above: `0b01010` (A0+B0) and `0b10100` (A1+B1) — the same-letter two-bit
+combinations that follow directly from User Manual Figure 16's
+independently-documented bit1..bit4 assignment (bit1 = A0, bit2 = A1, bit3 =
+B0, bit4 = B1, each meaningful on its own), rather than a newly introduced
+bit mapping. Accepting them is a relaxation of the previous "reject any
+multi-bit status byte" rule to accept exactly the two same-letter
+combinations that a single energy bow — a one-rocker switch's full-width
+plate, or a genuinely simultaneous two-rocker press — can produce in one
+telegram; every other multi-bit combination (the two diagonals A0+B1/A1+B0,
+any 3-bit combo, or the 4-bit combo) remains rejected fail-closed, since no
+physical rocker action produces them.
+
+This rests on the same already-live-proven bit mapping as the four
+single-button patterns (see "Button bit mapping" above), but the
+combination itself is still **manual-sourced, pending live confirmation**:
+no live capture of an actual A0+B0 or A1+B1 telegram — from either a
+one-rocker switch or a genuinely simultaneous two-rocker press — has yet
+been recorded against a reference device. Add a live-proof entry here
+(mirroring the "Resolved live after Phase 4 commissioning" section above)
+once one is captured.
+
 ## Still open / explicitly unsupported
 - **Optional-data modes (10/11/13-byte forms).** Still unobserved on the
   reference device. `telegram.parse_data_telegram` continues to reject every

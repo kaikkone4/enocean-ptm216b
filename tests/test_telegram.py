@@ -10,12 +10,13 @@ from __future__ import annotations
 import pytest
 
 from custom_components.enocean_ptm216b.telegram import (
-    Button,
+    ButtonPattern,
     ParseRejectionReason,
     StatusRejectionReason,
     StatusParseError,
     TelegramParseError,
     interpret_switch_status,
+    normalize_button_pattern,
     parse_data_telegram,
 )
 
@@ -79,29 +80,55 @@ def test_parse_rejection_never_includes_raw_bytes_in_message_or_repr():
 
 
 # ---------------------------------------------------------------------------
-# interpret_switch_status: valid single-bit cases, every button, both edges
+# interpret_switch_status: valid single-button cases, every button, both edges
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "status_byte, expected_button, expected_is_press",
+    "status_byte, expected_pattern, expected_is_press",
     [
-        (0b00010, Button.A0, False),
-        (0b00011, Button.A0, True),
-        (0b00100, Button.A1, False),
-        (0b00101, Button.A1, True),
-        (0b01000, Button.B0, False),
-        (0b01001, Button.B0, True),
-        (0b10000, Button.B1, False),
-        (0b10001, Button.B1, True),
+        (0b00010, ButtonPattern.A0, False),
+        (0b00011, ButtonPattern.A0, True),
+        (0b00100, ButtonPattern.A1, False),
+        (0b00101, ButtonPattern.A1, True),
+        (0b01000, ButtonPattern.B0, False),
+        (0b01001, ButtonPattern.B0, True),
+        (0b10000, ButtonPattern.B1, False),
+        (0b10001, ButtonPattern.B1, True),
     ],
 )
 def test_valid_single_button_status_bytes_decode_correctly(
-    status_byte, expected_button, expected_is_press
+    status_byte, expected_pattern, expected_is_press
 ):
     state = interpret_switch_status(status_byte)
 
-    assert state.button is expected_button
+    assert state.pattern is expected_pattern
+    assert state.is_press is expected_is_press
+
+
+# ---------------------------------------------------------------------------
+# interpret_switch_status: valid combo cases (Phase 5D) -- same-letter
+# two-bit combinations, both press and release edges (12 accepted cases
+# total across this file, matching the six patterns x two edges the phase
+# spec calls for).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status_byte, expected_pattern, expected_is_press",
+    [
+        (0b01010, ButtonPattern.A0_B0, False),
+        (0b01011, ButtonPattern.A0_B0, True),
+        (0b10100, ButtonPattern.A1_B1, False),
+        (0b10101, ButtonPattern.A1_B1, True),
+    ],
+)
+def test_valid_combo_status_bytes_decode_correctly(
+    status_byte, expected_pattern, expected_is_press
+):
+    state = interpret_switch_status(status_byte)
+
+    assert state.pattern is expected_pattern
     assert state.is_press is expected_is_press
 
 
@@ -128,13 +155,18 @@ def test_zero_button_bits_are_rejected(status_byte):
 
 @pytest.mark.parametrize(
     "status_byte",
-    [0b00110, 0b01010, 0b10010, 0b11110],
+    [
+        0b10010,  # diagonal: A0 (0b00010) + B1 (0b10000)
+        0b01100,  # diagonal: A1 (0b00100) + B0 (0b01000)
+        0b01110,  # 3-bit combo: A0 + A1 + B0
+        0b11110,  # 4-bit combo: A0 + A1 + B0 + B1
+    ],
 )
-def test_multiple_button_bits_are_rejected(status_byte):
+def test_unsupported_button_combinations_are_rejected(status_byte):
     with pytest.raises(StatusParseError) as excinfo:
         interpret_switch_status(status_byte)
 
-    assert excinfo.value.reason is StatusRejectionReason.MULTIPLE_BUTTON_BITS
+    assert excinfo.value.reason is StatusRejectionReason.UNSUPPORTED_BUTTON_COMBINATION
 
 
 def test_status_rejection_never_includes_the_raw_byte_in_message_or_repr():
@@ -146,3 +178,35 @@ def test_status_rejection_never_includes_the_raw_byte_in_message_or_repr():
     serialized = repr(excinfo.value) + str(excinfo.value)
     assert hex(marker_status) not in serialized
     assert str(marker_status) not in serialized
+
+
+# ---------------------------------------------------------------------------
+# normalize_button_pattern: full aliasing table for rockers=1, identity for
+# rockers=2 (and, matching this repo's "only exactly 1 means single-rocker"
+# convention, any other value too).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "pattern, expected",
+    [
+        (ButtonPattern.A0, ButtonPattern.A0),
+        (ButtonPattern.B0, ButtonPattern.A0),
+        (ButtonPattern.A0_B0, ButtonPattern.A0),
+        (ButtonPattern.A1, ButtonPattern.A1),
+        (ButtonPattern.B1, ButtonPattern.A1),
+        (ButtonPattern.A1_B1, ButtonPattern.A1),
+    ],
+)
+def test_normalize_button_pattern_aliases_everything_for_a_single_rocker_switch(
+    pattern, expected
+):
+    assert normalize_button_pattern(pattern, rockers=1) is expected
+
+
+@pytest.mark.parametrize("pattern", list(ButtonPattern))
+@pytest.mark.parametrize("rockers", [2, 0, 3, 99])
+def test_normalize_button_pattern_is_identity_for_non_single_rocker_values(
+    pattern, rockers
+):
+    assert normalize_button_pattern(pattern, rockers=rockers) is pattern

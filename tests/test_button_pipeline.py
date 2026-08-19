@@ -18,7 +18,7 @@ from custom_components.enocean_ptm216b.const import ENOCEAN_MANUFACTURER_ID
 from custom_components.enocean_ptm216b.identity import canonicalize_address
 from custom_components.enocean_ptm216b.press_timing import PressAction
 from custom_components.enocean_ptm216b.runtime_data import Ptm216bRuntimeData
-from custom_components.enocean_ptm216b.telegram import Button
+from custom_components.enocean_ptm216b.telegram import ButtonPattern
 
 from ccm_reference import ccm_encrypt_and_tag
 
@@ -94,7 +94,7 @@ async def test_first_trust_initializes_counter_without_verified_or_rejected(hass
     runtime, store = await _make_runtime(hass)
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
     events: list[PressAction] = []
-    switch_runtime.set_event_listener(Button.A0, events.append)
+    switch_runtime.set_event_listener(ButtonPattern.A0, events.append)
     calls: list = []
 
     button_pipeline.handle_advertisement(
@@ -139,7 +139,7 @@ async def test_accepted_telegram_fires_event_only_after_store_save_completes(has
         call_order.append("event_fired")
         events.append(action)
 
-    switch_runtime.set_event_listener(Button.A0, _listener)
+    switch_runtime.set_event_listener(ButtonPattern.A0, _listener)
 
     calls: list = []
     button_pipeline.handle_advertisement(
@@ -160,7 +160,7 @@ async def test_accepted_release_maps_to_is_press_false(hass):
     await store.async_save()
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
     events: list[PressAction] = []
-    switch_runtime.set_event_listener(Button.A0, events.append)
+    switch_runtime.set_event_listener(ButtonPattern.A0, events.append)
 
     calls: list = []
     button_pipeline.handle_advertisement(
@@ -185,7 +185,7 @@ async def test_duplicate_counter_is_rejected_and_fires_no_event(hass):
     await store.async_save()
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
     events: list[PressAction] = []
-    switch_runtime.set_event_listener(Button.A0, events.append)
+    switch_runtime.set_event_listener(ButtonPattern.A0, events.append)
 
     calls: list = []
     button_pipeline.handle_advertisement(
@@ -205,7 +205,7 @@ async def test_replay_rejected_counter_is_rejected_and_fires_no_event(hass):
     await store.async_save()
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
     events: list[PressAction] = []
-    switch_runtime.set_event_listener(Button.A0, events.append)
+    switch_runtime.set_event_listener(ButtonPattern.A0, events.append)
 
     calls: list = []
     button_pipeline.handle_advertisement(
@@ -281,7 +281,7 @@ async def test_status_reject_still_advances_counter_but_fires_no_event(hass):
     await store.async_save()
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
     events: list[PressAction] = []
-    switch_runtime.set_event_listener(Button.A0, events.append)
+    switch_runtime.set_event_listener(ButtonPattern.A0, events.append)
 
     calls: list = []
     button_pipeline.handle_advertisement(
@@ -311,7 +311,7 @@ async def test_concurrent_same_counter_callbacks_serialize_to_one_accept(hass):
     await store.async_save()
     switch_runtime = runtime.commissioned_switch_runtime(CANONICAL_ADDRESS)
     events: list[PressAction] = []
-    switch_runtime.set_event_listener(Button.A0, events.append)
+    switch_runtime.set_event_listener(ButtonPattern.A0, events.append)
 
     calls: list = []
     button_pipeline.handle_advertisement(
