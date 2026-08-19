@@ -26,10 +26,16 @@ _MIGRATED_ROCKER_COUNT = 2
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """One-time migration: backfill a "switch" subentry per pre-5A record.
 
-    Called automatically by Home Assistant exactly once per entry, before
-    ``async_setup_entry``, whenever ``entry.version < ConfigFlow.VERSION``.
-    Home Assistant persists the new version itself once this returns
-    ``True`` -- this function must not write ``entry.version``.
+    Called automatically by Home Assistant before ``async_setup_entry``
+    whenever ``entry.version``/``minor_version`` differ from the flow's.
+    Home Assistant does NOT bump the entry version itself (verified in
+    ``config_entries.ConfigEntry.async_migrate``: a ``True`` result only
+    schedules a save of whatever this function already changed) -- so this
+    function MUST call ``async_update_entry(entry, version=...)``, or it
+    re-runs on every reload. It is also written to be idempotent (existing
+    subentries are skipped) so that entries whose version was left at 1 by
+    the original, non-bumping v0.5.0-v0.6.1 releases recover cleanly
+    instead of crashing on ``already_configured``.
 
     Before Phase 5A (config subentries), a commissioned switch's only
     footprint was its ``commissioning_store.py`` record -- there were no
@@ -49,8 +55,11 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _hmac_secret=secret, commissioning_store=commissioning_store
     )
 
+    existing_unique_ids = {subentry.unique_id for subentry in entry.subentries.values()}
     for canonical_address, switch in commissioning_store.switches.items():
         handle = runtime.commissioned_device_handle(canonical_address)
+        if handle in existing_unique_ids:
+            continue
         hass.config_entries.async_add_subentry(
             entry,
             ConfigSubentry(
@@ -65,6 +74,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ),
         )
 
+    hass.config_entries.async_update_entry(entry, version=2)
     return True
 
 

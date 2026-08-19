@@ -49,6 +49,55 @@ async def test_migrate_entry_backfills_one_subentry_per_v0_4_0_record(hass):
     assert CANONICAL_ADDRESS not in repr(subentry.data)
 
 
+async def test_migrate_entry_bumps_the_entry_version_to_2(hass):
+    """The version bump is the migration's own job.
+
+    Home Assistant's ``ConfigEntry.async_migrate`` never writes the version
+    itself -- without this bump the migration re-runs on every reload and,
+    before the idempotency guard below existed, crashed the whole entry on
+    ``already_configured`` (real user-hit bug, v0.5.0-v0.6.1).
+    """
+    entry = MockConfigEntry(domain=DOMAIN, data={}, version=1)
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.enocean_ptm216b.IntegrationSecretStore.async_get_or_create",
+        AsyncMock(return_value=SECRET),
+    ):
+        result = await enocean_ptm216b.async_migrate_entry(hass, entry)
+
+    assert result is True
+    assert entry.version == 2
+
+
+async def test_migrate_entry_rerun_skips_already_backfilled_subentries(hass):
+    """Regression: entries left at version 1 by v0.5.0-v0.6.1 re-migrate.
+
+    Reproduces the user-hit crash: the store record's subentry already
+    exists from an earlier migration run, and re-running the migration must
+    skip it (idempotent) instead of raising ``already_configured`` and
+    failing the whole entry setup.
+    """
+    store = CommissioningStore(hass)
+    await store.async_load()
+    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, "Living room switch")
+    entry = MockConfigEntry(domain=DOMAIN, data={}, version=1)
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.enocean_ptm216b.IntegrationSecretStore.async_get_or_create",
+        AsyncMock(return_value=SECRET),
+    ):
+        assert await enocean_ptm216b.async_migrate_entry(hass, entry) is True
+        # Simulate the pre-fix broken state: version was never persisted,
+        # so Home Assistant re-runs the migration on the next reload.
+        hass.config_entries.async_update_entry(entry, version=1)
+        assert await enocean_ptm216b.async_migrate_entry(hass, entry) is True
+
+    assert len(entry.subentries) == 1
+    assert entry.version == 2
+
+
 async def test_migrate_entry_is_a_noop_when_already_migrated(hass):
     entry = MockConfigEntry(domain=DOMAIN, data={}, version=2)
     entry.add_to_hass(hass)
