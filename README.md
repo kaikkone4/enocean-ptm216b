@@ -128,6 +128,31 @@ state.
 The integration still emits no button events, services, or actions, and Bluetooth
 remains passive and non-connectable only throughout this capture.
 
+## Decoder foundation (Phase 3)
+
+Pure, unwired decoding primitives now exist alongside the passive observer:
+
+- `telegram.py` — a strict, fail-closed parser for the one telegram shape
+  Phase 2 evidence capture actually observed live (9-byte
+  authentication-only `manufacturer_data[0x03DA]`), plus a switch-status
+  interpreter for the A0/A1/B0/B1 button mapping. Every other length,
+  including the documented-but-unobserved optional-data forms, is rejected
+  with a typed reason rather than guessed at.
+- `crypto.py` — CCM (RFC 3610) MIC verification per User Manual section
+  5.1, built on the `cryptography` library's `AESCCM` primitive.
+- `replay_guard.py` — pure accept/duplicate/replay decision logic for
+  sequence counters, with an injectable persistence interface for a later
+  Home Assistant `Store`-backed implementation.
+
+None of this is wired into the running integration. The callback registered
+in `__init__.py` is unchanged: it still only counts advertisements and feeds
+designation/evidence capture. The integration emits no button events, stores
+no keys, and remains a passive observer exactly as before. Encrypted-mode
+telegrams and optional-data forms are rejected pending future evidence; see
+[docs/evidence-findings.md](docs/evidence-findings.md) and
+[docs/decoder-test-preparation.md](docs/decoder-test-preparation.md) for the
+full evidence trail and what remains open before any of this can be wired up.
+
 ## Test installation with HACS
 
 1. In Home Assistant, open **HACS → Integrations → ⋮ → Custom repositories**.
