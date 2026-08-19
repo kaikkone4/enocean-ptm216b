@@ -36,8 +36,6 @@ async def test_reconfigure_shows_a_menu_of_capture_options(hass):
     assert set(result["menu_options"]) == {
         "designation_capture",
         "evidence_capture",
-        "commission_switch",
-        "decommission_switch",
     }
     assert entry.runtime_data.capture_state is CaptureState.INERT
     assert entry.runtime_data.evidence_collector is None

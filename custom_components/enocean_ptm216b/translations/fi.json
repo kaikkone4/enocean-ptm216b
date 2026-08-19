@@ -7,44 +7,80 @@
       },
       "reconfigure": {
         "title": "Manuaalinen kaappaus",
-        "description": "Valitse rajattu, manuaalisesti käynnistettävä kaappaus, tai ota käyttöön / poista kytkin käytöstä. Asennus ja passiivinen havainnointi eivät koskaan käynnistä näitä itsestään.",
+        "description": "Valitse rajattu, manuaalisesti käynnistettävä diagnostinen kaappaus. Kytkimen käyttöönotto tapahtuu nykyään tämän integraation laitesivun \"Lisää kytkin\" -toiminnolla -- se on nyt oma, kytkinkohtainen lisäysvelho (config subentry), ei enää osa tätä valikkoa. Asennus ja passiivinen havainnointi eivät koskaan käynnistä näitä itsestään.",
         "menu_options": {
           "designation_capture": "Kytkimen valinta (designation capture)",
-          "evidence_capture": "Rakennetodisteiden keruu (evidence capture)",
-          "commission_switch": "Ota kytkin käyttöön",
-          "decommission_switch": "Poista kytkin käytöstä"
-        }
-      },
-      "commission_switch": {
-        "title": "Ota kytkin käyttöön",
-        "description": "Syötä moduulin QR-/tarratekstin sisältö, tai täytä osoite ja turva-avain manuaalisesti. Kytkin on jo täytynyt valita (kytkimen valinta, Phase 1.5) tässä istunnossa; sen osoitteen on vastattava tähän syötettyä. Älä koskaan liitä tätä materiaalia mihinkään muualle kuin tähän lomakkeeseen -- ei chattiin, GitHub-issueihin eikä Gitiin.",
-        "data": {
-          "qr_payload": "QR-/tarrateksti",
-          "address": "Osoite (manuaalinen vaihtoehto)",
-          "security_key": "Turva-avain (manuaalinen vaihtoehto, 32 heksamerkkiä)",
-          "name": "Nimi"
-        }
-      },
-      "decommission_switch": {
-        "title": "Poista kytkin käytöstä",
-        "description": "Valitse käytöstä poistettava kytkin. Sen osoite ja turva-avain poistetaan pysyvästi paikallisesta tallennustilasta, ja sen laite ja entiteetit poistetaan.",
-        "data": {
-          "switch": "Kytkin"
+          "evidence_capture": "Rakennetodisteiden keruu (evidence capture)"
         }
       }
-    },
-    "error": {
-      "invalid_commissioning_data": "Osoitetta, turva-avainta ja nimeä ei saatu luettua QR-/tarratekstistä eikä manuaalisista kentistä. Tarkista QR-teksti, tai täytä osoite, 32-merkkinen turva-avain ja nimi."
     },
     "abort": {
       "already_configured": "Laite on jo määritetty",
       "designation_capture_started": "Kytkimen valinta käynnistetty. Seuraa Designation capture -sensorin baseline-, press- ja confirmation-vaiheita.",
       "evidence_capture_started": "Todisteiden keruu käynnistetty. Seuraa Evidence capture -sensoria 90 sekunnin keruuikkunan ajan.",
-      "no_designated_device": "Tässä istunnossa ei ole vielä valittua laitetta. Aja ensin kytkimen valinta ja käynnistä todisteiden keruu sen jälkeen uudelleen.",
-      "designation_mismatch": "Syötetty osoite ei vastaa tässä istunnossa valittua kytkintä. Valitse ensin sama fyysinen kytkin (Phase 1.5) ja ota se sitten käyttöön.",
-      "commissioning_complete": "Kytkin otettu käyttöön. Sen painikenapahtumat ja diagnostiikkasensorit ovat nyt käytettävissä.",
-      "no_commissioned_devices": "Yhtään käyttöönotettua kytkintä ei vielä ole.",
-      "decommissioning_complete": "Kytkin poistettu käytöstä. Sen laite ja entiteetit on poistettu."
+      "no_designated_device": "Tässä istunnossa ei ole vielä valittua laitetta. Aja ensin kytkimen valinta ja käynnistä todisteiden keruu sen jälkeen uudelleen."
+    }
+  },
+  "config_subentries": {
+    "switch": {
+      "initiate_flow": {
+        "user": "Lisää kytkin"
+      },
+      "entry_type": "PTM 216B -kytkin",
+      "step": {
+        "user": {
+          "title": "Lisää kytkin",
+          "description": "Tunnista kytkin painamalla sitä (suositeltu -- tämä ristiintarkistaa seuraavaksi syötettävän osoitteen todellista painallusta vasten, joten kirjoitusvirhe ei voi ottaa käyttöön väärää kytkintä), tai ohita tunnistus ja syötä QR-/tarrateksti tai osoite/avain suoraan.",
+          "menu_options": {
+            "detect": "Tunnista painamalla (suositeltu)",
+            "key_entry_manual": "Ohita tunnistus"
+          }
+        },
+        "detect_failed": {
+          "title": "Yhtään kytkintä ei tunnistettu yksiselitteisesti",
+          "description": "Tunnistus päättyi valitsematta tarkalleen yhtä kytkintä -- joko mitään ei painettu, useampi ehdokas täsmäsi, tai kaksi painallusikkunaa eivät olleet yhtä mieltä. Yritä tunnistusta uudelleen, tai jatka ilman sitä.",
+          "menu_options": {
+            "detect": "Yritä tunnistusta uudelleen",
+            "key_entry_manual": "Jatka ilman tunnistusta"
+          }
+        },
+        "key_entry_detected": {
+          "title": "Syötä kytkimen avain",
+          "description": "Tunnistus onnistui. Syötä QR-/tarrateksti, lataa kuva tarrasta, tai täytä osoite ja turva-avain manuaalisesti -- antamasi osoite ristiintarkistetaan juuri painamaasi kytkintä vasten. Älä koskaan liitä tätä materiaalia mihinkään muualle kuin tähän lomakkeeseen -- ei chattiin, GitHub-issueihin eikä Gitiin. {qr_status}",
+          "data": {
+            "qr_image": "Kuva QR-koodista/tarrasta",
+            "qr_payload": "QR-/tarrateksti",
+            "address": "Osoite (manuaalinen vaihtoehto)",
+            "security_key": "Turva-avain (manuaalinen vaihtoehto, 32 heksamerkkiä)",
+            "name": "Nimi",
+            "rockers": "Painikeparien määrä"
+          }
+        },
+        "key_entry_manual": {
+          "title": "Syötä kytkimen avain",
+          "description": "Tunnistus ohitettiin, joten ristiintarkistusta todellista painallusta vasten ei tehdä -- kirjoitusvirhe osoitteessa tai avaimessa ottaa hiljaisesti käyttöön väärän kytkimen (tai ei mitään). Syötä QR-/tarrateksti, lataa kuva tarrasta, tai täytä osoite ja turva-avain manuaalisesti. Älä koskaan liitä tätä materiaalia mihinkään muualle kuin tähän lomakkeeseen -- ei chattiin, GitHub-issueihin eikä Gitiin. {qr_status}",
+          "data": {
+            "qr_image": "Kuva QR-koodista/tarrasta",
+            "qr_payload": "QR-/tarrateksti",
+            "address": "Osoite (manuaalinen vaihtoehto)",
+            "security_key": "Turva-avain (manuaalinen vaihtoehto, 32 heksamerkkiä)",
+            "name": "Nimi",
+            "rockers": "Painikeparien määrä"
+          }
+        }
+      },
+      "progress": {
+        "detect_baseline": "Pidä tämä ja kaikki muut EnOcean-kytkimet hiljaa muutaman sekunnin ajan, jotta hiljainen lähtötaso saadaan mitattua.",
+        "detect_press": "Paina kytkintä kolme kertaa, noin kahden sekunnin välein, siitä yhdestä painikkeesta, jonka haluat tunnistaa.",
+        "detect_confirmation": "Toista samat kolme painallusta samasta painikkeesta vahvistukseksi."
+      },
+      "error": {
+        "invalid_commissioning_data": "Osoitetta, turva-avainta ja nimeä ei saatu luettua kuvasta, QR-/tarratekstistä eikä manuaalisista kentistä. Tarkista kuva/QR-teksti, tai täytä osoite, 32-merkkinen turva-avain ja nimi.",
+        "switch_already_commissioned": "Tämä kytkin on jo otettu käyttöön. Poista sen olemassa oleva alikohde ensin, jos haluat ottaa sen uudelleen käyttöön uudella nimellä."
+      },
+      "abort": {
+        "designation_mismatch": "Syötetty osoite ei vastaa tässä velhossa tunnistettua kytkintä. Palaa takaisin ja tunnista sama fyysinen kytkin, tai jatka ilman tunnistusta."
+      }
     }
   }
 }

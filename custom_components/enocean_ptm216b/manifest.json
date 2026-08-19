@@ -6,10 +6,11 @@
   ],
   "config_flow": true,
   "dependencies": [
-    "bluetooth_adapters"
+    "bluetooth_adapters",
+    "file_upload"
   ],
   "documentation": "https://github.com/kaikkone4/enocean-ptm216b",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/kaikkone4/enocean-ptm216b/issues",
-  "version": "0.4.0"
+  "version": "0.5.0"
 }

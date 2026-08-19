@@ -5,14 +5,15 @@ rule that governs every other module in this integration
 (``identity.py``, ``designated_sessions.py``, ``evidence_capture.py``): a
 commissioned switch is user-owned and explicitly trusted through a local
 commissioning flow the user themselves runs (see ``config_flow.py``'s
-``commission_switch``/``decommission_switch`` steps), so its BLE address and
-its 16-byte device-specific security key must be retained -- otherwise no
-future advertisement from that switch could ever be matched back to its
+per-switch Add-device wizard, ``SwitchSubentryFlow``), so its BLE address
+and its 16-byte device-specific security key must be retained -- otherwise
+no future advertisement from that switch could ever be matched back to its
 key for MIC verification. Both live ONLY here, in this private Home
 Assistant ``Store`` and the in-memory cache that mirrors it -- NEVER in
-config-entry data, entity state/attributes, diagnostics, logs, or UI. See
-README.md, "Commissioning and button events (Phase 4)", for the exact
-boundary this module enforces.
+config-entry data, subentry data, entity state/attributes, diagnostics,
+logs, or UI. See README.md, "Commissioning and button events (Phase 4)" and
+"Per-switch Add-device wizard (Phase 5A)", for the exact boundary this
+module enforces.
 
 The stored shape, per canonical address (``identity.canonicalize_address``
 output), is ``{"key": <base64 of 16 raw key bytes>, "name": <str>,

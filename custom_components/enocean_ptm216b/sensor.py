@@ -22,23 +22,31 @@ async def async_setup_entry(
     capture_sensor = Ptm216bDesignationCaptureSensor(entry)
     evidence_sensor = Ptm216bEvidenceCaptureSensor(entry)
     entry.runtime_data.sensor = advertisement_sensor
-    entities: list[SensorEntity] = [
-        advertisement_sensor,
-        capture_sensor,
-        evidence_sensor,
-    ]
+    async_add_entities([advertisement_sensor, capture_sensor, evidence_sensor])
 
     store = entry.runtime_data.commissioning_store
-    if store is not None:
-        for canonical_address, switch in store.switches.items():
-            entities.append(
-                Ptm216bVerifiedTelegramsSensor(entry, canonical_address, switch.name)
-            )
-            entities.append(
-                Ptm216bRejectedTelegramsSensor(entry, canonical_address, switch.name)
-            )
+    if store is None:
+        return
 
-    async_add_entities(entities)
+    handles_to_addresses = {
+        entry.runtime_data.commissioned_device_handle(address): address
+        for address in store.switches
+    }
+
+    for subentry_id, subentry in entry.subentries.items():
+        if subentry.subentry_type != "switch":
+            continue
+        canonical_address = handles_to_addresses.get(subentry.data.get("handle"))
+        switch = store.switches.get(canonical_address) if canonical_address else None
+        if canonical_address is None or switch is None:
+            continue
+        async_add_entities(
+            [
+                Ptm216bVerifiedTelegramsSensor(entry, canonical_address, switch.name),
+                Ptm216bRejectedTelegramsSensor(entry, canonical_address, switch.name),
+            ],
+            config_subentry_id=subentry_id,
+        )
 
 
 class Ptm216bAdvertisementCounter(SensorEntity):

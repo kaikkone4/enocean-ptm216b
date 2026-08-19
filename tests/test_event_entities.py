@@ -16,6 +16,8 @@ from custom_components.enocean_ptm216b.identity import canonicalize_address
 from custom_components.enocean_ptm216b.runtime_data import Ptm216bRuntimeData
 from custom_components.enocean_ptm216b.telegram import Button, Ptm216bButtonState
 
+from conftest import RecordingAddEntities
+
 SECRET = b"\x01" * 32
 ADDRESS = "AA:BB:CC:DD:EE:FF"
 CANONICAL_ADDRESS = canonicalize_address(ADDRESS)
@@ -25,6 +27,36 @@ SYNTHETIC_KEY = bytes(range(16))
 def _make_entry() -> Mock:
     entry = Mock(entry_id="entry-id")
     entry.runtime_data = Ptm216bRuntimeData(_hmac_secret=SECRET)
+    return entry
+
+
+async def _commissioned_entry(
+    hass, *, name: str = "Living room switch", rockers: int = 2
+) -> MockConfigEntry:
+    """Build an entry with a store record and a matching "switch" subentry,
+    the same shape ``__init__.py``'s reconciliation and this platform's
+    ``async_setup_entry`` both expect after Phase 5A.
+    """
+    store = CommissioningStore(hass)
+    await store.async_load()
+    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, name)
+    runtime = Ptm216bRuntimeData(_hmac_secret=SECRET, commissioning_store=store)
+    handle = runtime.commissioned_device_handle(CANONICAL_ADDRESS)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={},
+        subentries_data=[
+            {
+                "data": {"handle": handle, "name": name, "rockers": rockers},
+                "subentry_type": "switch",
+                "title": name,
+                "unique_id": handle,
+            }
+        ],
+    )
+    entry.runtime_data = runtime
+    entry.add_to_hass(hass)
     return entry
 
 
@@ -92,21 +124,28 @@ def test_handle_button_event_release_triggers_and_writes_state():
 
 
 async def test_async_setup_entry_creates_four_entities_per_commissioned_switch(hass):
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    store = CommissioningStore(hass)
-    await store.async_load()
-    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, "Living room switch")
-    entry.runtime_data = Ptm216bRuntimeData(
-        _hmac_secret=SECRET, commissioning_store=store
+    entry = await _commissioned_entry(hass, rockers=2)
+
+    recorder = RecordingAddEntities()
+    await async_setup_entry(hass, entry, recorder)
+
+    assert len(recorder.added) == 4
+    assert {entity._button for entity in recorder.added} == set(Button)
+    assert all(
+        isinstance(entity, Ptm216bButtonEventEntity) for entity in recorder.added
     )
-    entry.add_to_hass(hass)
+    (subentry_id,) = entry.subentries
+    assert recorder.subentry_ids == [subentry_id] * 4
 
-    added: list = []
-    await async_setup_entry(hass, entry, added.extend)
 
-    assert len(added) == 4
-    assert {entity._button for entity in added} == set(Button)
-    assert all(isinstance(entity, Ptm216bButtonEventEntity) for entity in added)
+async def test_async_setup_entry_creates_only_a0_a1_for_a_single_rocker_switch(hass):
+    entry = await _commissioned_entry(hass, rockers=1)
+
+    recorder = RecordingAddEntities()
+    await async_setup_entry(hass, entry, recorder)
+
+    assert len(recorder.added) == 2
+    assert {entity._button for entity in recorder.added} == {Button.A0, Button.A1}
 
 
 async def test_async_setup_entry_creates_nothing_when_no_switches_commissioned(hass):
@@ -118,25 +157,18 @@ async def test_async_setup_entry_creates_nothing_when_no_switches_commissioned(h
     )
     entry.add_to_hass(hass)
 
-    added: list = []
-    await async_setup_entry(hass, entry, added.extend)
+    recorder = RecordingAddEntities()
+    await async_setup_entry(hass, entry, recorder)
 
-    assert added == []
+    assert recorder.added == []
 
 
 async def test_only_the_matching_buttons_entity_fires(hass):
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    store = CommissioningStore(hass)
-    await store.async_load()
-    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, "Living room switch")
-    entry.runtime_data = Ptm216bRuntimeData(
-        _hmac_secret=SECRET, commissioning_store=store
-    )
-    entry.add_to_hass(hass)
+    entry = await _commissioned_entry(hass, rockers=2)
 
-    added: list = []
-    await async_setup_entry(hass, entry, added.extend)
-    entities = {entity._button: entity for entity in added}
+    recorder = RecordingAddEntities()
+    await async_setup_entry(hass, entry, recorder)
+    entities = {entity._button: entity for entity in recorder.added}
     for entity in entities.values():
         entity.async_write_ha_state = Mock()
         await entity.async_added_to_hass()
@@ -151,3 +183,29 @@ async def test_only_the_matching_buttons_entity_fires(hass):
     for button in (Button.A0, Button.A1, Button.B0):
         assert entities[button].state is None
         entities[button].async_write_ha_state.assert_not_called()
+
+
+async def test_verified_b_button_telegram_on_single_rocker_switch_fires_no_event(hass):
+    """A rockers==1 switch never gets a B0/B1 event entity, so
+    ``CommissionedSwitchRuntime.record_verified_and_fire`` for a B-button
+    telegram finds no listener and is a no-op -- it still counts as
+    verified, per button_pipeline.py's own docstring, it just fires
+    nothing observable. No change to button_pipeline.py/runtime_data.py was
+    needed for this: only event.py's entity-creation filtering.
+    """
+    entry = await _commissioned_entry(hass, rockers=1)
+
+    recorder = RecordingAddEntities()
+    await async_setup_entry(hass, entry, recorder)
+    for entity in recorder.added:
+        entity.async_write_ha_state = Mock()
+        await entity.async_added_to_hass()
+
+    switch_runtime = entry.runtime_data.commissioned_switch_runtime(CANONICAL_ADDRESS)
+    switch_runtime.record_verified_and_fire(
+        Ptm216bButtonState(button=Button.B0, is_press=True)
+    )
+
+    assert switch_runtime.verified_count == 1
+    for entity in recorder.added:
+        entity.async_write_ha_state.assert_not_called()

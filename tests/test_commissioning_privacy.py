@@ -1,14 +1,14 @@
-"""Privacy assertions for Phase 4 commissioning.
+"""Privacy assertions for Phase 4/5A commissioning.
 
 commissioning_store.py is a DELIBERATE, documented exception that persists
 an address and a device-specific key -- see its module docstring. This file
 proves everything else still holds: the pipeline never logs an address or
 key, no repr() of any runtime object leaks one, and no entity state,
-attribute, or device-registry identifier exposes the canonical address or
-key -- only the non-reversible HMAC device handle, exactly like every other
-phase in this repo. In the style of test_privacy.py and
-test_decoder_privacy.py. All key/address/name material here is synthetic
-test data.
+attribute, subentry data, or device-registry identifier exposes the
+canonical address or key -- only the non-reversible HMAC device handle,
+exactly like every other phase in this repo. In the style of
+test_privacy.py and test_decoder_privacy.py. All key/address/name material
+here is synthetic test data.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.enocean_ptm216b import button_pipeline
 from custom_components.enocean_ptm216b.commissioning_store import CommissioningStore
-from custom_components.enocean_ptm216b.config_flow import ConfigFlow
+from custom_components.enocean_ptm216b.config_flow import SwitchSubentryFlow
 from custom_components.enocean_ptm216b.const import DOMAIN, ENOCEAN_MANUFACTURER_ID
 from custom_components.enocean_ptm216b.event import (
     async_setup_entry as async_setup_event_entry,
@@ -29,6 +29,7 @@ from custom_components.enocean_ptm216b.sensor import (
 )
 
 from ccm_reference import ccm_encrypt_and_tag
+from conftest import RecordingAddEntities
 
 KEY_MARKER = b"private-secret-marker"  # distinctive marker bytes, never a real key
 SYNTHETIC_KEY = (KEY_MARKER * 2)[:16]
@@ -45,6 +46,32 @@ def _valid_value(counter: int, status: int) -> bytes:
     aad = _AAD_PREFIX + counter_bytes + bytes([status])
     mic = ccm_encrypt_and_tag(SYNTHETIC_KEY, nonce, b"", aad, tag_length=4)
     return counter_bytes + bytes([status]) + mic
+
+
+async def _commissioned_entry(
+    hass, *, name: str = "Living room switch"
+) -> MockConfigEntry:
+    store = CommissioningStore(hass)
+    await store.async_load()
+    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, name)
+    runtime = Ptm216bRuntimeData(_hmac_secret=SECRET, commissioning_store=store)
+    handle = runtime.commissioned_device_handle(CANONICAL_ADDRESS)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={},
+        subentries_data=[
+            {
+                "data": {"handle": handle, "name": name, "rockers": 2},
+                "subentry_type": "switch",
+                "title": name,
+                "unique_id": handle,
+            }
+        ],
+    )
+    entry.runtime_data = runtime
+    entry.add_to_hass(hass)
+    return entry
 
 
 async def test_pipeline_never_logs_address_or_key(hass, caplog):
@@ -98,20 +125,13 @@ async def test_commissioning_store_and_runtime_repr_never_leak_material(hass):
 
 
 async def test_device_registry_identifier_is_the_non_reversible_handle(hass):
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    store = CommissioningStore(hass)
-    await store.async_load()
-    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, "Living room switch")
-    entry.runtime_data = Ptm216bRuntimeData(
-        _hmac_secret=SECRET, commissioning_store=store
-    )
-    entry.add_to_hass(hass)
+    entry = await _commissioned_entry(hass)
 
-    added: list = []
-    await async_setup_event_entry(hass, entry, added.extend)
+    recorder = RecordingAddEntities()
+    await async_setup_event_entry(hass, entry, recorder)
 
-    assert added
-    for entity in added:
+    assert recorder.added
+    for entity in recorder.added:
         identifiers = entity.device_info["identifiers"]
         assert CANONICAL_ADDRESS not in str(identifiers)
         assert ADDRESS not in str(identifiers)
@@ -120,64 +140,55 @@ async def test_device_registry_identifier_is_the_non_reversible_handle(hass):
         assert handle == f"test-{handle[5:]}"
 
 
-async def test_decommission_form_options_never_expose_the_raw_address(hass):
-    """The decommission selector's option `value` is serialized to the
-    frontend as part of the form response, just like `label` -- so the
-    canonical address must not appear there either, even though only the
-    name (`label`) is ever rendered as visible text. Only the non-reversible
-    device handle may serve as the option `value`.
+async def test_subentry_data_never_carries_the_raw_address_or_key(hass):
+    """A "switch" subentry's ``data`` holds only ``handle``/``name``/
+    ``rockers`` -- never the canonical address or the security key. This is
+    what makes it safe for subentry data to appear in diagnostics/frontend
+    responses, unlike the private commissioning store.
     """
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    store = CommissioningStore(hass)
-    await store.async_load()
-    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, "Living room switch")
-    entry.runtime_data = Ptm216bRuntimeData(
-        _hmac_secret=SECRET, commissioning_store=store
-    )
-    entry.add_to_hass(hass)
+    entry = await _commissioned_entry(hass)
 
-    flow = ConfigFlow()
+    (subentry,) = entry.subentries.values()
+    serialized = repr(subentry.data)
+
+    assert CANONICAL_ADDRESS not in serialized
+    assert ADDRESS not in serialized
+    assert SYNTHETIC_KEY.hex() not in serialized
+    assert set(subentry.data) == {"handle", "name", "rockers"}
+
+
+async def test_key_entry_form_errors_never_echo_submitted_material(hass):
+    entry = await _commissioned_entry(hass, name="Other switch")
+    flow = SwitchSubentryFlow()
     flow.hass = hass
-    flow.handler = DOMAIN
+    flow.handler = (entry.entry_id, "switch")
     flow.flow_id = "test-flow-id"
-    flow.context = {"source": "reconfigure", "entry_id": entry.entry_id}
+    flow.context = {"source": "user"}
 
-    result = await flow.async_step_decommission_switch(None)
+    result = await flow.async_step_key_entry_manual(
+        {
+            "qr_payload": "super-secret-garbage-payload",
+            "address": "",
+            "security_key": "",
+            "name": "X",
+        }
+    )
 
     assert result["type"] == "form"
-    selectors = [
-        field
-        for field in result["data_schema"].schema.values()
-        if hasattr(field, "serialize")
-    ]
-    assert selectors
-    serialized_options = repr([selector.serialize() for selector in selectors])
-
-    assert CANONICAL_ADDRESS not in serialized_options
-    assert ADDRESS not in serialized_options
-    handle = entry.runtime_data.commissioned_device_handle(CANONICAL_ADDRESS)
-    assert handle in serialized_options
-    assert "Living room switch" in serialized_options
+    assert "super-secret-garbage-payload" not in repr(result)
 
 
 async def test_commissioned_entity_state_and_attributes_never_leak_material(hass):
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    store = CommissioningStore(hass)
-    await store.async_load()
-    await store.async_add(CANONICAL_ADDRESS, SYNTHETIC_KEY, "Living room switch")
-    entry.runtime_data = Ptm216bRuntimeData(
-        _hmac_secret=SECRET, commissioning_store=store
-    )
-    entry.add_to_hass(hass)
+    entry = await _commissioned_entry(hass)
 
-    events: list = []
-    sensors: list = []
-    await async_setup_event_entry(hass, entry, events.extend)
-    await async_setup_sensor_entry(hass, entry, sensors.extend)
+    events = RecordingAddEntities()
+    sensors = RecordingAddEntities()
+    await async_setup_event_entry(hass, entry, events)
+    await async_setup_sensor_entry(hass, entry, sensors)
 
     commissioned_entities = [
         entity
-        for entity in (*events, *sensors)
+        for entity in (*events.added, *sensors.added)
         if hasattr(entity, "_canonical_address")
     ]
     assert len(commissioned_entities) == 6  # 4 event entities + 2 diagnostic sensors

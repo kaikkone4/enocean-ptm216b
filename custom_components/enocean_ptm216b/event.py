@@ -1,14 +1,25 @@
 """Button press/release event entities for commissioned PTM 216B switches.
 
-Four :class:`~homeassistant.components.event.EventEntity` entities exist per
-commissioned switch -- one per rocker button (A0, A1, B0, B1) -- created at
-setup for every switch already in the commissioning store (so they survive a
-Home Assistant restart) and again after any commission/decommission reload
-triggered from ``config_flow.py``. Each entity fires only when
-``button_pipeline.py``'s fail-closed pipeline decodes a MIC-verified,
-counter-accepted telegram naming this exact button; see that module's
-docstring for the full gate order and the first-trust policy that decides
-when NO event fires at all.
+One :class:`~homeassistant.components.event.EventEntity` per rocker button
+exists per commissioned switch -- A0/A1 always, B0/B1 only when that
+switch's "switch" subentry declares ``rockers == 2`` (see
+``config_flow.py``'s Add-device wizard and ``__init__.py``'s migration,
+which backfills ``rockers == 2`` for every pre-Phase-5A switch). Entities
+are created at setup for every commissioned switch's subentry (so they
+survive a Home Assistant restart) and again after any Add-device-wizard or
+subentry-removal reload. Each entity is tied to its subentry via
+``config_subentry_id`` on :func:`~homeassistant.helpers.entity_platform.
+AddEntitiesCallback.__call__` -- NOT via ``DeviceInfo`` -- so removing the
+subentry cleanly removes its device and entities.
+
+Each entity fires only when ``button_pipeline.py``'s fail-closed pipeline
+decodes a MIC-verified, counter-accepted telegram naming this exact button;
+see that module's docstring for the full gate order and the first-trust
+policy that decides when NO event fires at all. A verified B0/B1 telegram
+on a ``rockers == 1`` switch still counts as verified (see
+``runtime_data.CommissionedSwitchRuntime.record_verified_and_fire``) -- it
+just fires no event, because no listener is ever registered for that
+button here.
 """
 
 from __future__ import annotations
@@ -23,21 +34,39 @@ from .const import DOMAIN
 from .telegram import Button
 
 _EVENT_TYPES = ["press", "release"]
+_SINGLE_ROCKER_BUTTONS = (Button.A0, Button.A1)
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Create four button event entities for every commissioned switch."""
+    """Create each commissioned switch's button event entities, per subentry."""
     store = entry.runtime_data.commissioning_store
     if store is None:
         return
-    entities = [
-        Ptm216bButtonEventEntity(entry, canonical_address, switch.name, button)
-        for canonical_address, switch in store.switches.items()
-        for button in Button
-    ]
-    async_add_entities(entities)
+
+    handles_to_addresses = {
+        entry.runtime_data.commissioned_device_handle(address): address
+        for address in store.switches
+    }
+
+    for subentry_id, subentry in entry.subentries.items():
+        if subentry.subentry_type != "switch":
+            continue
+        canonical_address = handles_to_addresses.get(subentry.data.get("handle"))
+        switch = store.switches.get(canonical_address) if canonical_address else None
+        if canonical_address is None or switch is None:
+            continue
+        buttons = (
+            _SINGLE_ROCKER_BUTTONS
+            if subentry.data.get("rockers") == 1
+            else tuple(Button)
+        )
+        entities = [
+            Ptm216bButtonEventEntity(entry, canonical_address, switch.name, button)
+            for button in buttons
+        ]
+        async_add_entities(entities, config_subentry_id=subentry_id)
 
 
 class Ptm216bButtonEventEntity(EventEntity):

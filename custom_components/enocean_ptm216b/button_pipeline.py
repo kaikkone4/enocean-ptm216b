@@ -2,8 +2,9 @@
 
 Implements docs/decoder-test-preparation.md's "Fail-closed decoder contract"
 for exactly the subset of advertisements that match a canonical address
-already commissioned via ``config_flow.py``'s ``commission_switch`` step (see
-``commissioning_store.py``). Every other advertisement -- unrecognized
+already commissioned via ``config_flow.py``'s per-switch Add-device wizard
+(``SwitchSubentryFlow``; see ``commissioning_store.py``). Every other
+advertisement -- unrecognized
 address, uncommissioned switch -- is untouched by this module; the existing
 designation/evidence/observation call path in
 ``runtime_data.Ptm216bRuntimeData.record_advertisement_observation`` keeps
