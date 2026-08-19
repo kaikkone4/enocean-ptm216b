@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
 
+from .commissioning_store import CommissioningStore
 from .evidence_capture import EvidenceCollector, EvidenceScheduler, EvidenceState
-from .identity import device_identifier
+from .identity import device_handle, device_identifier
+from .telegram import Button, Ptm216bButtonState
 
 DESIGNATION_BASELINE_SECONDS = 10.0
 DESIGNATION_CAPTURE_SECONDS = 30.0
@@ -16,6 +19,8 @@ MINIMUM_DESIGNATION_OBSERVATIONS = 3
 CaptureTimerCancel = Callable[[], None]
 CaptureScheduler = Callable[[float, Callable[[], None]], CaptureTimerCancel]
 CaptureStateListener = Callable[[], None]
+ButtonEventListener = Callable[[bool], None]
+DiagnosticsListener = Callable[[], None]
 
 
 class CaptureState(Enum):
@@ -42,6 +47,83 @@ class DesignationCandidate:
 
 
 @dataclass
+class CommissionedSwitchRuntime:
+    """Runtime-only counters, entity listeners, and the per-switch replay lock
+    for one commissioned switch (see ``commissioning_store.CommissioningStore``
+    for the durable key/name/counter record this complements).
+
+    ``lock`` is the ONE mechanism serializing concurrent Bluetooth callbacks
+    for the SAME switch, per docs/decoder-test-preparation.md's "Fail-closed
+    decoder contract" item 6 ("Concurrent callbacks must not both accept the
+    same counter"). It is created once, lazily, by
+    :meth:`Ptm216bRuntimeData.commissioned_switch_runtime` and kept for the
+    runtime's lifetime -- never recreated per-callback.
+
+    ``verified_count`` and ``rejected_count`` are plain, restart-resetting
+    runtime counters (the durable, restart-surviving state is the sequence
+    counter in ``commissioning_store.CommissionedSwitch``, not these). Exactly
+    one of "verified", "rejected", or neither increments per processed
+    telegram -- see :meth:`record_verified_and_fire` and
+    :meth:`record_rejected` for the single, precise rule: "verified" is a
+    telegram that passed shape, MIC, and counter (``ACCEPTED``) verification
+    AND decoded to exactly one button, and therefore fired an event;
+    "rejected" is every other outcome that reached a decision (parse
+    failure, MIC failure, ``DUPLICATE``, ``REPLAY_REJECTED``, or a status
+    decode failure on an already-``ACCEPTED`` counter); first-trust counter
+    initialization (see ``button_pipeline.py``) increments neither.
+    """
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    verified_count: int = 0
+    rejected_count: int = 0
+    _diagnostics_listeners: list[DiagnosticsListener] = field(
+        default_factory=list, repr=False
+    )
+    _event_listeners: dict[Button, ButtonEventListener] = field(
+        default_factory=dict, repr=False
+    )
+
+    def record_rejected(self) -> None:
+        """Count one rejected telegram; never fires a button event."""
+        self.rejected_count += 1
+        self._notify_diagnostics()
+
+    def record_verified_and_fire(self, button_state: Ptm216bButtonState) -> None:
+        """Count one fully-verified telegram and fire its button event.
+
+        Only calls the listener registered for ``button_state.button`` --
+        the other three of this switch's four button entities never fire.
+        """
+        self.verified_count += 1
+        self._notify_diagnostics()
+        listener = self._event_listeners.get(button_state.button)
+        if listener is not None:
+            listener(button_state.is_press)
+
+    def add_diagnostics_listener(self, listener: DiagnosticsListener) -> None:
+        """Subscribe one diagnostic sensor (Verified or Rejected telegrams)."""
+        self._diagnostics_listeners.append(listener)
+
+    def remove_diagnostics_listener(self, listener: DiagnosticsListener) -> None:
+        """Unsubscribe a diagnostic sensor without retaining a stale reference."""
+        if listener in self._diagnostics_listeners:
+            self._diagnostics_listeners.remove(listener)
+
+    def set_event_listener(
+        self, button: Button, listener: ButtonEventListener | None
+    ) -> None:
+        """Register (or, with ``None``, clear) one button's event-entity listener."""
+        if listener is None:
+            self._event_listeners.pop(button, None)
+        else:
+            self._event_listeners[button] = listener
+
+    def _notify_diagnostics(self) -> None:
+        for listener in self._diagnostics_listeners:
+            listener()
+
+
+@dataclass
 class Ptm216bRuntimeData:
     """Ephemeral passive-observation and designation-capture state."""
 
@@ -63,6 +145,10 @@ class Ptm216bRuntimeData:
     evidence_collector: EvidenceCollector | None = field(default=None, repr=False)
     evidence_state_listener: CaptureStateListener | None = field(
         default=None, repr=False
+    )
+    commissioning_store: CommissioningStore | None = field(default=None, repr=False)
+    commissioned_switches: dict[str, CommissionedSwitchRuntime] = field(
+        default_factory=dict, repr=False
     )
 
     def start_designation_capture(self, schedule: CaptureScheduler) -> None:
@@ -280,3 +366,38 @@ class Ptm216bRuntimeData:
         """Notify the privacy-safe evidence diagnostic entity of changes."""
         if self.evidence_state_listener is not None:
             self.evidence_state_listener()
+
+    def commissioned_switch_runtime(
+        self, canonical_address: str
+    ) -> CommissionedSwitchRuntime:
+        """Return (lazily creating) the runtime record for one commissioned switch.
+
+        Created once per canonical address and kept for the runtime's
+        lifetime -- in particular, its :attr:`CommissionedSwitchRuntime.lock`
+        must never be recreated per-callback, or concurrent callbacks for the
+        same switch would no longer serialize against each other.
+        """
+        runtime = self.commissioned_switches.get(canonical_address)
+        if runtime is None:
+            runtime = CommissionedSwitchRuntime()
+            self.commissioned_switches[canonical_address] = runtime
+        return runtime
+
+    def compute_device_identifier(self, address: str) -> str:
+        """Return the local HMAC identifier for an address, using this entry's secret.
+
+        The one sanctioned way for code outside this module (in particular
+        ``config_flow.py``) to derive an identifier from an address -- callers
+        must never reach into ``_hmac_secret`` directly.
+        """
+        return device_identifier(self._hmac_secret, address)
+
+    def commissioned_device_handle(self, canonical_address: str) -> str:
+        """Return the non-reversible device-registry handle for one switch.
+
+        Reuses the existing HMAC + truncation convention exactly (see
+        ``identity.device_identifier``/``identity.device_handle``) -- the
+        canonical address itself is never used as a device-registry
+        identifier.
+        """
+        return device_handle(self.compute_device_identifier(canonical_address))
