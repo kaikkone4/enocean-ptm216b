@@ -638,18 +638,50 @@ The **Radio census** diagnostic sensor exposes only:
   for the active phase only
 - while `complete`: `entries` (per-manufacturer-ID summary, plus one bucket
   for advertisements with no manufacturer data at all, ranked by
-  press-window count descending and capped at the top 20 --
+  press-window payload-change count descending and capped at the top 20 --
   `displayed_entries_truncated` flags when more existed than were shown),
   `truncated` (whether the underlying tracking cap of 64 manufacturer IDs
   or 32 service UUIDs was ever hit), and two convenience fields,
-  `enocean_0x03da_press_count` and `casambi_0x03c3_press_count`, so you do
-  not have to hunt through `entries` for the two IDs that matter most here
+  `enocean_0x03da_press_payload_changes` and
+  `casambi_0x03c3_press_payload_changes`, so you do not have to hunt
+  through `entries` for the two IDs that matter most here
 
-Each entry in `entries` has: `baseline_count`, `press_count`,
-`distinct_devices` (a count only), `max_value_length` (the largest
-manufacturer-data value length seen for that ID), `connectable_seen`, and,
-for the no-manufacturer-data bucket only, `service_uuids` (short-form
-16-bit UUIDs, capped at 32).
+Each entry in `entries` has: `baseline_payload_changes`,
+`press_payload_changes`, `distinct_devices` (a count only),
+`max_value_length` (the largest manufacturer-data value length seen for
+that ID), `connectable_seen`, and, for the no-manufacturer-data bucket
+only, `service_uuids` (short-form 16-bit UUIDs, capped at 32).
+
+### What `baseline_payload_changes`/`press_payload_changes` actually count
+
+**These are not counts of radio transmissions -- they are counts of
+advertisement payload *changes*.** This was discovered from a real user
+run: in a 20-second baseline, the Casambi bucket (`0x03c3`) showed
+`baseline_payload_changes: 35` with `distinct_devices: 35` (i.e. each of 35
+nearby Casambi devices contributed exactly one count); the no-manufacturer
+bucket showed 11/11; several others showed 1/1 or 3/3. The one exception
+was a RuuviTag (`0x0499`, whose sensor payload changes on every
+transmission), which reached 46 counts from only 9 distinct devices.
+
+The reason is Home Assistant itself, not this integration: its Bluetooth
+stack (`habluetooth.manager.BluetoothManager._scanner_adv_received`)
+silently drops an advertisement whose `manufacturer_data`, `service_data`,
+`service_uuids`, and `name` are all byte-identical to the previous
+advertisement from that same address, *before* dispatching it to any
+integration's callback -- including this integration's own unfiltered one
+that feeds the census. A device repeating one unchanging payload is
+therefore delivered to this integration exactly once, no matter how many
+times it actually transmits over the air. See `radio_census.py`'s module
+docstring, "What the counts actually measure", for the precise citation.
+
+This does not break what the census is for: an EnOcean/PTM switch's
+telegram carries a sequence counter that increments on every press, so
+every press produces a genuinely new payload and is counted -- a real user
+control run registered 24 counts for 24 actual presses. But it does mean
+the raw numbers must be read as "how many times did this device's payload
+change", not "how many times did this device transmit" -- a low count can
+mean a quiet radio, or it can just as easily mean a chatty device that
+never changes what it says.
 
 ### Privacy limits (stricter than evidence capture -- this is a broad scan)
 
@@ -671,16 +703,29 @@ active scanning, no connections.
 3. When the state becomes `press`, press the switch under test repeatedly
    for the 40-second window.
 4. Wait for `complete`, then read the **Radio census** sensor's attributes.
+5. **Required positive control -- do this before trusting any zero
+   result:** run the census once more, this time pressing a switch you
+   *know* still transmits normally in its EnOcean form (any EnOcean/PTM
+   switch that has not been paired to Casambi works). Confirm its entry's
+   `press_payload_changes` rises. **A zero result for the switch actually
+   under investigation means nothing on its own** -- per "What
+   `baseline_payload_changes`/`press_payload_changes` actually count"
+   above, a zero is consistent both with "this installation truly cannot
+   hear this switch" and with "this run had some unrelated problem" (a
+   proxy offline, a timing mistake, pressing the wrong physical switch).
+   Only a run that first demonstrates a rising count for a known-working
+   switch gives a zero result on the switch under test any evidential
+   weight.
 
 ### How to interpret the result
 
-- **A manufacturer ID whose `press_count` is high while its
-  `baseline_count` is close to zero is the switch under test.** If that
-  turns out to be `0x03da` (EnOcean), the switch is still transmitting in
-  its normal form and this installation can hear it -- the original
-  silence has some other cause. If it turns out to be `0x03c3` (Casambi),
-  the switch itself is now advertising as a Casambi device, not an EnOcean
-  one -- a very different finding from "invisible."
+- **A manufacturer ID whose `press_payload_changes` is high while its
+  `baseline_payload_changes` is close to zero is the switch under test.**
+  If that turns out to be `0x03da` (EnOcean), the switch is still
+  transmitting in its normal form and this installation can hear it -- the
+  original silence has some other cause. If it turns out to be `0x03c3`
+  (Casambi), the switch itself is now advertising as a Casambi device, not
+  an EnOcean one -- a very different finding from "invisible."
 - **If NO entry anywhere shows a `max_value_length` above roughly 31
   bytes**, this installation's Bluetooth receive path is not getting BLE 5
   extended advertising **at all** -- typical of original ESP32 / Bluetooth
@@ -693,6 +738,12 @@ active scanning, no connections.
 - **Casambi = manufacturer ID `0x03C3`; EnOcean = manufacturer ID
   `0x03DA`.** Both have their own convenience field in the sensor's
   attributes, per above.
+- **A count close to a bucket's `distinct_devices` means those devices
+  each repeat one unchanging payload -- it does NOT mean they transmitted
+  only once**; see "What `baseline_payload_changes`/`press_payload_changes`
+  actually count" above. Do not read a low
+  `baseline_payload_changes`/`press_payload_changes` as "this device's
+  radio is quiet" without checking `distinct_devices` first.
 
 ## Test installation with HACS
 

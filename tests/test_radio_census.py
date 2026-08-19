@@ -92,7 +92,7 @@ def test_advertisements_are_ignored_after_complete():
     assert census.summary == summary_before
 
 
-def test_baseline_and_press_counts_are_tracked_independently_per_manufacturer():
+def test_baseline_and_press_changes_are_tracked_independently_per_manufacturer():
     census, schedule, _cancel = _start()
 
     census.record_advertisement("id1", {ENOCEAN_ID: b"\x01" * 9}, set(), False)
@@ -102,8 +102,8 @@ def test_baseline_and_press_counts_are_tracked_independently_per_manufacturer():
     _advance_to_complete(census, schedule)
 
     entry = census.summary.entries[bucket_key_label(ENOCEAN_ID)]
-    assert entry.baseline_count == 2
-    assert entry.press_count == 1
+    assert entry.baseline_payload_changes == 2
+    assert entry.press_payload_changes == 1
 
 
 def test_current_phase_count_reflects_only_the_active_phase():
@@ -161,9 +161,9 @@ def test_no_manufacturer_data_bucket_aggregates_separately():
     _advance_to_complete(census, schedule)
 
     no_mfr_entry = census.summary.entries[NO_MANUFACTURER_DATA_KEY]
-    assert no_mfr_entry.baseline_count == 1
+    assert no_mfr_entry.baseline_payload_changes == 1
     enocean_entry = census.summary.entries[bucket_key_label(ENOCEAN_ID)]
-    assert enocean_entry.baseline_count == 1
+    assert enocean_entry.baseline_payload_changes == 1
 
 
 def test_no_manufacturer_data_bucket_collects_short_form_service_uuids():
@@ -194,8 +194,10 @@ def test_a_single_advertisement_with_multiple_manufacturer_ids_updates_both_buck
     )
     _advance_to_complete(census, schedule)
 
-    assert census.summary.entries[bucket_key_label(ENOCEAN_ID)].baseline_count == 1
-    assert census.summary.entries[bucket_key_label(CASAMBI_ID)].baseline_count == 1
+    enocean_entry = census.summary.entries[bucket_key_label(ENOCEAN_ID)]
+    casambi_entry = census.summary.entries[bucket_key_label(CASAMBI_ID)]
+    assert enocean_entry.baseline_payload_changes == 1
+    assert casambi_entry.baseline_payload_changes == 1
 
 
 def test_manufacturer_id_cap_stops_new_keys_but_keeps_counting_existing_ones():
@@ -213,7 +215,7 @@ def test_manufacturer_id_cap_stops_new_keys_but_keeps_counting_existing_ones():
 
     assert len(census.summary.entries) == MAX_TRACKED_MANUFACTURER_IDS
     assert bucket_key_label(MAX_TRACKED_MANUFACTURER_IDS) not in census.summary.entries
-    assert census.summary.entries[bucket_key_label(0)].baseline_count == 2
+    assert census.summary.entries[bucket_key_label(0)].baseline_payload_changes == 2
     assert census.summary.truncated is True
 
 
@@ -309,3 +311,71 @@ def test_state_listener_is_notified_on_cancel():
 
     listener.assert_called_once_with()
     assert census.state is RadioCensusState.INERT
+
+
+# --- Counting-semantics regression coverage ------------------------------
+#
+# These tests exist to make an easy-to-miss fact explicit and permanently
+# covered: `record_advertisement` counts what it is CALLED with, one call
+# per invocation, always -- it has no de-duplication logic of its own and
+# none is added here. The reason `baseline_payload_changes`/
+# `press_payload_changes` end up counting payload *changes* rather than raw
+# radio transmissions is entirely upstream of this module: Home Assistant's
+# own Bluetooth stack (`habluetooth.manager.BluetoothManager.
+# _scanner_adv_received`) silently drops a byte-identical repeat of an
+# advertisement -- comparing manufacturer_data/service_data/service_uuids/
+# name against the previously seen advertisement for that address -- before
+# ever invoking any integration's callback, including the unfiltered one
+# this census registers. So two byte-identical advertisements from the same
+# real-world device are, in production, delivered to
+# `record_advertisement` at most once, not twice -- but that dedup happens
+# entirely inside `habluetooth`, upstream of this module and of these
+# tests. Simulating it here would test `habluetooth`, not this module, so
+# these tests instead nail down the other half of the contract: this
+# module is a faithful, non-deduplicating counter of whatever it is fed.
+# See radio_census.py's module docstring, "What the counts actually
+# measure", for the full mechanism and its citation.
+
+
+def test_two_byte_identical_advertisements_from_the_same_device_both_count():
+    """This module has no de-duplication logic of its own -- if it is fed
+    two calls, even with byte-identical manufacturer data from the same
+    pseudonymous identifier, both are counted. In real operation, Home
+    Assistant's own Bluetooth stack is what would prevent a byte-identical
+    repeat from ever reaching this method a second time (see the module
+    docstring) -- this test intentionally does NOT simulate that upstream
+    behavior; it documents that this module's own counting is a simple,
+    un-deduplicated tally of what it is handed.
+    """
+    census, schedule, _cancel = _start()
+    identical_payload = {ENOCEAN_ID: b"\x01" * 9}
+
+    census.record_advertisement("same-device", dict(identical_payload), set(), False)
+    census.record_advertisement("same-device", dict(identical_payload), set(), False)
+    _advance_to_complete(census, schedule)
+
+    entry = census.summary.entries[bucket_key_label(ENOCEAN_ID)]
+    assert entry.baseline_payload_changes == 2
+    assert entry.distinct_devices == 1
+
+
+def test_a_changing_payload_from_one_device_counts_every_change():
+    """The counterpart to the identical-payload case above: a device whose
+    payload changes on every transmission -- exactly what an EnOcean PTM
+    switch does, since its telegram carries a sequence counter that
+    increments on every press -- is counted once per change even though it
+    is a single physical device. This is the mechanism the press-window
+    test in the README relies on: each press changes the telegram, so each
+    press changes the payload, so each press is counted, even though
+    Home Assistant would have deduplicated an unchanging repeat.
+    """
+    census, schedule, _cancel = _start()
+
+    census.record_advertisement("same-device", {ENOCEAN_ID: b"\x01" * 9}, set(), False)
+    census.record_advertisement("same-device", {ENOCEAN_ID: b"\x02" * 9}, set(), False)
+    census.record_advertisement("same-device", {ENOCEAN_ID: b"\x03" * 9}, set(), False)
+    _advance_to_complete(census, schedule)
+
+    entry = census.summary.entries[bucket_key_label(ENOCEAN_ID)]
+    assert entry.baseline_payload_changes == 3
+    assert entry.distinct_devices == 1

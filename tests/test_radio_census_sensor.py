@@ -86,13 +86,13 @@ def test_sensor_reports_the_ranked_summary_and_convenience_fields_when_complete(
     attrs = sensor.extra_state_attributes
     assert attrs["truncated"] is False
     assert attrs["displayed_entries_truncated"] is False
-    assert attrs["enocean_0x03da_press_count"] == 2
-    assert attrs["casambi_0x03c3_press_count"] == 1
+    assert attrs["enocean_0x03da_press_payload_changes"] == 2
+    assert attrs["casambi_0x03c3_press_payload_changes"] == 1
     entries = attrs["entries"]
-    # Ranked descending by press_count: EnOcean (2) before Casambi (1).
+    # Ranked descending by press_payload_changes: EnOcean (2) before Casambi (1).
     assert list(entries.keys())[:2] == ["0x03da", "0x03c3"]
-    assert entries["0x03da"]["baseline_count"] == 1
-    assert entries["0x03da"]["press_count"] == 2
+    assert entries["0x03da"]["baseline_payload_changes"] == 1
+    assert entries["0x03da"]["press_payload_changes"] == 2
 
 
 def test_convenience_fields_default_to_zero_when_absent():
@@ -104,8 +104,8 @@ def test_convenience_fields_default_to_zero_when_absent():
     _run_to_complete(entry, schedule)
 
     attrs = sensor.extra_state_attributes
-    assert attrs["enocean_0x03da_press_count"] == 0
-    assert attrs["casambi_0x03c3_press_count"] == 0
+    assert attrs["enocean_0x03da_press_payload_changes"] == 0
+    assert attrs["casambi_0x03c3_press_payload_changes"] == 0
     assert attrs["entries"] == {}
 
 

@@ -41,6 +41,55 @@ start_radio_census`` for how it registers its own additional, unfiltered,
 still-passive Bluetooth callback for exactly its own bounded duration,
 separate from and without altering this integration's normal filtered one.
 
+What the counts actually measure -- read this before trusting a number
+------------------------------------------------------------------------
+
+``baseline_payload_changes`` and ``press_payload_changes`` (see
+``ManufacturerSummary`` below) are NOT counts of radio transmissions. They
+are counts of advertisements this module was actually fed by
+``runtime_data.Ptm216bRuntimeData._handle_radio_census_advertisement`` --
+and Home Assistant's own Bluetooth stack, not this module, decides what
+gets fed. Verified directly in the installed ``habluetooth`` package (this
+repo's dev environment has 6.1.0) at ``habluetooth/manager.py``, method
+``BluetoothManager._scanner_adv_received``: after updating
+``self._all_history[service_info.address]``, there is an early ``return``
+(guarded by a comparison of ``manufacturer_data``, ``service_data``,
+``service_uuids``, and ``name`` against the previous ``BluetoothServiceInfo``
+for that same address) that fires whenever all four are unchanged from the
+last-seen advertisement -- and that ``return`` sits *before* the call to
+``self._subclass_discover_info(service_info)`` a few lines later, which is
+what ultimately fans out to every integration's matcher-filtered callback,
+including this integration's own unfiltered one that feeds this census. In
+other words: a device repeating a byte-identical payload is delivered to
+every Home Assistant integration, this one included, exactly ONCE, no
+matter how many times it actually transmits over the air.
+
+Concretely, this means:
+
+- A bucket whose ``distinct_devices`` is close to its
+  ``baseline_payload_changes``/``press_payload_changes`` is a bucket of
+  devices that each repeat one unchanging payload -- it does NOT mean each
+  device transmitted only once. Real user data: a 20 s baseline saw a
+  Casambi bucket (0x03C3) at 35 payload changes across 35 distinct devices,
+  and a no-manufacturer-data bucket at 11/11 -- both almost certainly
+  transmitting far more often than that, just always the same bytes.
+- A device whose payload changes on every transmission -- a sensor beacon
+  broadcasting live readings, or (usefully, for this census's own purpose)
+  a PTM switch whose telegram includes a sequence counter that increments
+  on every press -- IS counted once per change, so its count tracks actual
+  presses/transmissions closely. This is exactly why the baseline/press
+  comparison this census is built around still works for EnOcean: each
+  press changes the telegram, so each press changes the payload, so each
+  press is counted.
+- The corollary: a press-window test's result is meaningless without a
+  **positive control**. A zero or near-zero ``press_payload_changes`` for
+  the switch under test could mean it truly transmitted nothing, OR it
+  could mean it transmitted a payload identical to one already seen (e.g.
+  during the baseline, if the switch design ever repeats a payload) and
+  Home Assistant silently deduplicated it before this module ever saw it.
+  See the README's "Radio census (Phase 7)" section, "Safe user-visible
+  test", for the required control-run step.
+
 Privacy contract (stricter than evidence capture, since this is a broad
 scan of *everything* nearby, not one designated device)
 ---------------------------------------------------------------------------
@@ -123,10 +172,18 @@ def _short_service_uuid(uuid: str) -> str | None:
 
 @dataclass
 class ManufacturerSummary:
-    """Aggregate, privacy-safe summary for one bucket, never raw bytes."""
+    """Aggregate, privacy-safe summary for one bucket, never raw bytes.
 
-    baseline_count: int
-    press_count: int
+    ``baseline_payload_changes``/``press_payload_changes`` count
+    advertisements actually delivered to this module during each phase --
+    NOT radio transmissions. See the module docstring's "What the counts
+    actually measure" section for why those two are not the same thing
+    (Home Assistant's own Bluetooth stack deduplicates a byte-identical
+    repeat before this module ever sees it).
+    """
+
+    baseline_payload_changes: int
+    press_payload_changes: int
     distinct_devices: int
     max_value_length: int
     connectable_seen: bool
@@ -159,8 +216,8 @@ class _ManufacturerBucket:
     exposed, and never appears in an exported summary.
     """
 
-    baseline_count: int = 0
-    press_count: int = 0
+    baseline_payload_changes: int = 0
+    press_payload_changes: int = 0
     max_value_length: int = 0
     connectable_seen: bool = False
     distinct_devices: int = 0
@@ -172,9 +229,13 @@ class _ManufacturerBucket:
 class RadioCensus:
     """Manually started, bounded, two-phase (baseline/press) radio census.
 
-    Fed one record per received advertisement, of ANY manufacturer,
-    connectable or not, via :meth:`record_advertisement` -- but only
-    inspects it while ``state`` is ``BASELINE`` or ``PRESS``. Inactive
+    Fed one record per advertisement this integration's own callback was
+    actually handed by Home Assistant, of ANY manufacturer, connectable or
+    not, via :meth:`record_advertisement` -- but only inspects it while
+    ``state`` is ``BASELINE`` or ``PRESS``. See the module docstring's "What
+    the counts actually measure" section: Home Assistant deduplicates a
+    byte-identical repeat before this class ever sees it, so what this
+    class counts is payload *changes*, not raw transmissions. Inactive
     (``INERT``) by default; a window is armed only by :meth:`start` and
     always ends either as ``COMPLETE`` (both phase timers elapsed) or, via
     :meth:`cancel`, back at ``INERT``. There is no ``ABORTED`` state here --
@@ -194,14 +255,23 @@ class RadioCensus:
 
     @property
     def current_phase_count(self) -> int:
-        """Return the running advertisement total for the active phase only.
+        """Return the running payload-change total for the active phase only.
 
-        Valid in every state; ``0`` outside ``BASELINE``/``PRESS``.
+        This is a count of advertisements this module was fed, which -- per
+        the module docstring's "What the counts actually measure" section --
+        is a count of payload *changes*, not radio transmissions; Home
+        Assistant's own Bluetooth stack silently deduplicates a
+        byte-identical repeat before this module ever sees it. Valid in
+        every state; ``0`` outside ``BASELINE``/``PRESS``.
         """
         if self.state is RadioCensusState.BASELINE:
-            return sum(bucket.baseline_count for bucket in self._buckets.values())
+            return sum(
+                bucket.baseline_payload_changes for bucket in self._buckets.values()
+            )
         if self.state is RadioCensusState.PRESS:
-            return sum(bucket.press_count for bucket in self._buckets.values())
+            return sum(
+                bucket.press_payload_changes for bucket in self._buckets.values()
+            )
         return 0
 
     @property
@@ -216,8 +286,8 @@ class RadioCensus:
 
         entries = {
             bucket_key_label(key): ManufacturerSummary(
-                baseline_count=bucket.baseline_count,
-                press_count=bucket.press_count,
+                baseline_payload_changes=bucket.baseline_payload_changes,
+                press_payload_changes=bucket.press_payload_changes,
                 distinct_devices=bucket.distinct_devices,
                 max_value_length=bucket.max_value_length,
                 connectable_seen=bucket.connectable_seen,
@@ -290,9 +360,9 @@ class RadioCensus:
             self._buckets[key] = bucket
 
         if self.state is RadioCensusState.BASELINE:
-            bucket.baseline_count += 1
+            bucket.baseline_payload_changes += 1
         else:
-            bucket.press_count += 1
+            bucket.press_payload_changes += 1
         # This is the extended-advertising tell: any legacy BLE advertisement
         # payload is capped at 31 bytes total (so a manufacturer-data VALUE
         # is well under that); a value materially longer than ~27-31 bytes
