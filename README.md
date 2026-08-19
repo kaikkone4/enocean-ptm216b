@@ -212,50 +212,101 @@ integration's normal "no addresses persisted" rule: a commissioned switch's
 BLE address and its 16-byte device-specific security key are retained, but
 **only** in a private, local-only Home Assistant storage file, never
 anywhere else — not in config-entry data, entity state or attributes,
-diagnostics, logs, or the UI. Decommissioning a switch deletes both
-permanently.
+diagnostics, logs, or the UI. Removing a switch deletes both permanently.
 
-**Never paste QR/label text, an address, or a security key into chat, a
-GitHub issue, or Git** — only into the commissioning form itself, inside
-your own Home Assistant instance.
+**Never paste QR/label text, a photo of the label, an address, or a
+security key into chat, a GitHub issue, or Git** — only into the Add-device
+wizard itself, inside your own Home Assistant instance.
 
-### Commissioning a switch
+## Per-switch Add-device wizard (Phase 5A)
 
-Available from the integration's **Reconfigure** menu as **Commission
-switch**, alongside the existing Designation capture and Evidence capture
-options. It requires a switch already designated in this session (Phase
-1.5) — commissioning cross-checks that the address you enter belongs to
-that same physical switch (via the same local HMAC identity check
-designation itself uses) before trusting anything you type.
+As of Phase 5A, each commissioned switch is its own **config subentry**
+under this integration's device page — the same "sub-devices" mechanism
+Home Assistant core integrations like MQTT and the various AI conversation
+agents use. This replaced the old single **Reconfigure → Commission
+switch**/**Decommission switch** menu entries from Phase 4; those two steps
+no longer exist. **Reconfigure** now only ever offers the two diagnostic
+tools, **Designation capture** and **Evidence capture**, unchanged.
 
-Two ways to provide the address and key:
+### Adding a switch
 
-- **QR/label text** — paste the full text printed on the module's label or
-  QR code into the "QR/label text" field. The form tolerantly extracts the
-  address and key from it regardless of exact spacing/`+` separators.
-- **Manual entry** — fill in the address (colon-separated or plain hex) and
-  the 32-character security key fields yourself. Used only if QR/label text
-  is left blank or does not yield both an address and a key.
+From **Settings → Devices & services → EnOcean PTM 216B BLE**, use **Add
+switch**. The wizard has two parts:
 
-Give the switch a name, then submit. On success, the switch's four button
-event entities and two diagnostic sensors are created (or recreated) under
-a new device named after it.
+1. **Detection (optional, recommended).** Choose "Detect by pressing" and
+   follow the on-screen phases — a quiet 10-second baseline, then two
+   independent 30-second three-press windows on the button you want to
+   detect — exactly the same bounded, auto-advancing capture the old
+   Designation capture diagnostic used, just driven live inside the wizard
+   instead of a separate sensor. It auto-advances between phases; there is
+   nothing to click mid-detection. If it does not uniquely select a switch,
+   you can retry or continue without detection. Detecting first means the
+   next step's entered address is cross-checked against the switch you
+   actually pressed, so a typo cannot silently commission the wrong device.
+   Choosing "Skip detection" goes straight to the next step, with no such
+   cross-check — the form says so.
+2. **Key entry.** Provide the address and 16-byte security key one of three
+   ways: upload a photo of the module's QR code/label (only available when
+   the optional `zxing-cpp` decode library is installed — see below), paste
+   the QR/label text, or type the address and key manually. Give the switch
+   a name and choose whether it has one or two rocker button pairs. Submit.
 
-### Decommissioning a switch
+On success, the switch's device and event/diagnostic entities appear (or
+reappear) automatically — no separate reload step.
 
-Available from the same **Reconfigure** menu as **Decommission switch**.
-Choose a switch by name; its address and key are permanently deleted from
-local storage, and its device and entities are removed. Only names are ever
-shown — other commissioned switches' addresses never appear in the list.
+### Rocker count
+
+Most PTM 216B modules have two rocker button pairs (A0/A1 and B0/B1); some
+have only one (A0/A1). Choosing "1" in the wizard creates only the A0/A1
+event entities; choosing "2" (the default) creates all four, as before. A
+B0/B1 telegram from a one-rocker switch is still MIC-verified and counts
+toward **Verified telegrams** — it simply has no event entity to fire, so
+nothing observable happens for it.
+
+### Removing a switch
+
+Delete its subentry from the device page, the same way you would remove any
+other Home Assistant sub-device. This removes its device and entities
+immediately; its private store record (address, key, counter) is purged the
+next time this integration reloads, which happens automatically right after
+a removal.
+
+### Migrating from v0.4.0
+
+If you commissioned switches before Phase 5A, they are migrated
+automatically, once, the first time you update: each existing switch gets
+its own "switch" subentry (defaulting to two rockers, since the
+rocker-count concept did not exist yet), with no address, key, or other
+sensitive data in that subentry — only its name and non-reversible device
+handle. Your switches, their names, keys, and sequence counters are
+unaffected; nothing needs to be re-commissioned.
+
+### QR-photo upload availability
+
+Photo upload uses the optional `zxing-cpp` library, which is **not** listed
+as a hard requirement of this integration (it has never published a
+musllinux wheel, so a hard requirement would break setup entirely on
+Home Assistant OS). If it is not installed, the photo-upload field simply
+does not appear in the wizard — QR/label text and manual entry still work
+exactly the same. On a glibc-based install (Home Assistant Container or
+Supervised on Debian, or a dev environment) you can enable it yourself:
+
+```bash
+pip install zxing-cpp
+```
+
+into the same Python environment Home Assistant runs in, then restart Home
+Assistant.
 
 ### What each commissioned switch exposes
 
-- Four **event** entities, one per rocker button (A0, A1, B0, B1), each
-  firing `press` or `release`. Only the one entity matching the decoded
-  button fires per accepted telegram.
+- One **event** entity per rocker button (A0, A1, and, for two-rocker
+  switches, B0, B1), each firing `press` or `release`. Only the one entity
+  matching the decoded button fires per accepted telegram.
 - **Verified telegrams** (diagnostic sensor): counts only telegrams that
-  passed every gate above and produced an event. Does not include
-  first-trust initialization or a status-decode rejection.
+  passed every gate above (shape, MIC, counter, and, for a button this
+  switch has an event entity for, status). Does not include first-trust
+  initialization.
 - **Rejected telegrams** (diagnostic sensor): counts everything else that
   reached a decision — shape rejects, MIC failures, duplicates, replay
   rejects, and status-decode rejects. Never exposes a reason, byte, address,
@@ -267,33 +318,43 @@ private commissioning store.
 
 ### Safe user-visible test
 
-1. Complete Phase 1.5 designation for your test switch first (see above).
-   Commissioning is unavailable until a switch is designated.
-2. Open the integration, choose **Reconfigure → Commission switch**, and
-   provide the QR/label text or the manual address + security key, plus a
-   name. Submit.
-3. Press each of the four buttons — A0, A1, B0, and B1 — a few times each.
-4. The **first** verified press after commissioning produces **no** event —
+1. From **Settings → Devices & services → EnOcean PTM 216B BLE**, choose
+   **Add switch**.
+2. Pick **Detect by pressing**. During the baseline phase keep all EnOcean
+   test switches quiet; during each press phase, make three short presses
+   on the one button you want to detect, about two seconds apart.
+3. Once detection succeeds, provide the address and key (QR photo, pasted
+   QR/label text, or manual entry), a name, and the correct rocker count,
+   then submit.
+4. Press each button the switch has — A0, A1, and (for a two-rocker switch)
+   B0, B1 — a few times each.
+5. The **first** verified press after commissioning produces **no** event —
    that is the first-trust policy, not a bug. Every press/release after that
    should appear as an event on the corresponding event entity.
-5. Watch the **Verified telegrams** and **Rejected telegrams** sensors move
+6. Watch the **Verified telegrams** and **Rejected telegrams** sensors move
    as expected: verified increments once per real press/release that
-   produces an event; rejected increments for anything discarded.
-6. **Polarity check**: press and *hold* one button. The event fired at the
+   produces an event (or, for a one-rocker switch, once per verified B0/B1
+   telegram too, even though nothing fires); rejected increments for
+   anything discarded.
+7. **Polarity check**: press and *hold* one button. The event fired at the
    moment you push down should be `press`; the one fired when you release
    should be `release`. If it is the other way around, please report it —
    the absolute press/release polarity is sourced from the manual, not yet
    proven against a live device (see
    [docs/evidence-findings.md](docs/evidence-findings.md)), and a one-line
    mapping flip would be needed to fix it.
-7. Verify no address, key, raw payload byte, absolute counter, or full
-   identifier appears anywhere in entity state, attributes, logs, or
-   diagnostics. Only the switch's chosen name and its non-reversible device
-   handle are visible.
-8. Optionally, use **Reconfigure → Decommission switch** to remove the test
-   switch again and confirm its device and entities disappear.
+8. Verify no address, key, raw payload byte, absolute counter, uploaded
+   photo, or full identifier appears anywhere in entity state, attributes,
+   logs, or diagnostics. Only the switch's chosen name and its
+   non-reversible device handle are visible.
+9. Optionally, delete the switch's subentry from the device page and
+   confirm its device and entities disappear.
 
 ## Test installation with HACS
+
+Requires Home Assistant **2025.7.0** or newer (Phase 5A's per-switch
+Add-device wizard uses config subentries, which reached general
+availability in that release).
 
 1. In Home Assistant, open **HACS → Integrations → ⋮ → Custom repositories**.
 2. Add `https://github.com/kaikkone4/enocean-ptm216b` with category **Integration**.
