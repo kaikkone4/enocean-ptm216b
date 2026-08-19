@@ -1,8 +1,11 @@
+from unittest.mock import Mock, patch
+
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.enocean_ptm216b.const import DOMAIN
 from custom_components.enocean_ptm216b.evidence_capture import EvidenceState
+from custom_components.enocean_ptm216b.radio_census import RadioCensusState
 from custom_components.enocean_ptm216b.runtime_data import (
     CaptureState,
     Ptm216bRuntimeData,
@@ -36,9 +39,11 @@ async def test_reconfigure_shows_a_menu_of_capture_options(hass):
     assert set(result["menu_options"]) == {
         "designation_capture",
         "evidence_capture",
+        "radio_census",
     }
     assert entry.runtime_data.capture_state is CaptureState.INERT
     assert entry.runtime_data.evidence_collector is None
+    assert entry.runtime_data.radio_census is None
 
 
 @pytest.mark.asyncio
@@ -128,5 +133,95 @@ async def test_reconfigure_starting_designation_cancels_running_evidence(hass):
     )
 
     assert entry.runtime_data.evidence_collector.state is EvidenceState.INERT
+    assert entry.runtime_data.capture_state is CaptureState.BASELINE
+    entry.runtime_data.cancel_designation_capture()
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_radio_census_starts_the_bounded_census(hass):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.runtime_data = Ptm216bRuntimeData(_hmac_secret=b"\x01" * 32)
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": entry.entry_id},
+    )
+    with patch(
+        "custom_components.enocean_ptm216b.config_flow.bluetooth.async_register_callback",
+        return_value=Mock(),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "radio_census"}
+        )
+
+    assert result["type"] == "abort"
+    assert result["reason"] == "radio_census_started"
+    assert entry.runtime_data.radio_census is not None
+    assert entry.runtime_data.radio_census.state is RadioCensusState.BASELINE
+    entry.runtime_data.cancel_radio_census()
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_starting_radio_census_cancels_running_evidence(hass):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.runtime_data = Ptm216bRuntimeData(_hmac_secret=b"\x01" * 32)
+    entry.runtime_data.designated_identifier = "a" * 64
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": entry.entry_id},
+    )
+    await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "evidence_capture"}
+    )
+    assert entry.runtime_data.evidence_collector.state is EvidenceState.COLLECTING
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": entry.entry_id},
+    )
+    with patch(
+        "custom_components.enocean_ptm216b.config_flow.bluetooth.async_register_callback",
+        return_value=Mock(),
+    ):
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "radio_census"}
+        )
+
+    assert entry.runtime_data.evidence_collector.state is EvidenceState.INERT
+    assert entry.runtime_data.radio_census.state is RadioCensusState.BASELINE
+    entry.runtime_data.cancel_radio_census()
+
+
+@pytest.mark.asyncio
+async def test_reconfigure_starting_designation_cancels_running_radio_census(hass):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.runtime_data = Ptm216bRuntimeData(_hmac_secret=b"\x01" * 32)
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": entry.entry_id},
+    )
+    with patch(
+        "custom_components.enocean_ptm216b.config_flow.bluetooth.async_register_callback",
+        return_value=Mock(),
+    ):
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "radio_census"}
+        )
+    assert entry.runtime_data.radio_census.state is RadioCensusState.BASELINE
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": "reconfigure", "entry_id": entry.entry_id},
+    )
+    await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "designation_capture"}
+    )
+
+    assert entry.runtime_data.radio_census.state is RadioCensusState.INERT
     assert entry.runtime_data.capture_state is CaptureState.BASELINE
     entry.runtime_data.cancel_designation_capture()

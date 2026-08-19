@@ -135,6 +135,55 @@ been recorded against a reference device. Add a live-proof entry here
 (mirroring the "Resolved live after Phase 4 commissioning" section above)
 once one is captured.
 
+## User-observed Casambi advertisement (2026-08-19) -- USER-OBSERVED, LOW CONFIDENCE, OPEN HYPOTHESIS
+
+Using nRF Connect on a phone, standing next to a Casambi-paired luminaire,
+the user directly observed that luminaire's own Casambi advertisement:
+
+- Manufacturer: "Casambi Technologies Oy", manufacturer ID **0x03C3**
+- Data Length: **159 bytes**
+- Device Type: "Beacon"
+- Connectable: yes
+- Advertising interval: approximately 535 ms
+
+This is a **USER-OBSERVED** fact about the Casambi *luminaire's own*
+advertisement -- not a captured PTM 216B telegram, and not proof of
+anything about how a Casambi-paired *switch* behaves. No raw bytes were
+recorded here; only the structural facts above, consistent with this
+repository's own fixture/redaction policy (see
+docs/decoder-test-preparation.md, "Fixture and redaction policy").
+
+**What is well-established from this observation:** a 159-byte
+manufacturer-data value is far beyond the 31-byte legacy BLE advertising
+payload limit. The only way a value that size reaches a BLE receiver at all
+is **BLE 5 extended advertising**. This is a direct structural consequence
+of the observed length, not an inference.
+
+**Open hypothesis (NOT established, confidence: LOW-TO-MODERATE):** the
+user's ESPHome Bluetooth proxies are `board: esp32dev` -- original ESP32,
+Bluetooth 4.2 -- which cannot receive extended advertising, 2M PHY, or
+Coded PHY at all. If a Casambi-commissioned PTM 216B switch moves its own
+telegrams to a similarly extended-advertising form (which this observation
+does **not** directly establish -- it only characterizes the *luminaire's*
+advertisement, not the switch's), that would fully explain why this
+integration's passive observer sees zero advertisements from a
+Casambi-paired switch: not because the switch stops transmitting, but
+because it transmits in a form this installation's specific receive path
+is physically incapable of hearing, while a modern phone standing next to
+it hears it fine. This reframes the earlier "silence" finding: it may be a
+receive-path limitation specific to Bluetooth-4.2-class proxies, not
+evidence that the switch goes silent, moves to a non-BLE custom radio
+channel, or is disabled.
+
+This hypothesis is **not tested or confirmed** as of this note. The
+Phase 7 radio census (see `radio_census.py` and the README's "Radio census
+(Phase 7)" section) exists specifically to gather the missing evidence:
+whether *any* nearby advertisement, from any manufacturer, ever exceeds the
+legacy 31-byte limit on this installation's actual receive path, and
+whether anything correlates with pressing a Casambi-paired switch. Until a
+radio census is run against a real Casambi-paired switch and its result
+recorded here, this remains an open hypothesis, not a finding.
+
 ## Still open / explicitly unsupported
 - **Optional-data modes (10/11/13-byte forms).** Still unobserved on the
   reference device. `telegram.parse_data_telegram` continues to reject every

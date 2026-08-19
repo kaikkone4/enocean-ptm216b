@@ -131,13 +131,14 @@ async def test_async_setup_entry_adds_two_diagnostic_sensors_per_switch(hass):
     rejected = [
         e for e in recorder.added if isinstance(e, Ptm216bRejectedTelegramsSensor)
     ]
-    # Plus the 3 always-present observation-MVP sensors.
-    assert len(recorder.added) == 5
+    # Plus the 4 always-present observation-MVP/diagnostic sensors (advertisement
+    # counter, designation capture, evidence capture, radio census).
+    assert len(recorder.added) == 6
     assert len(verified) == 1
     assert len(rejected) == 1
     (subentry_id,) = entry.subentries
     assert recorder.subentry_ids.count(subentry_id) == 2
-    assert recorder.subentry_ids.count(None) == 3
+    assert recorder.subentry_ids.count(None) == 4
 
 
 async def test_async_setup_entry_adds_no_commissioned_sensors_without_switches(hass):
@@ -152,4 +153,4 @@ async def test_async_setup_entry_adds_no_commissioned_sensors_without_switches(h
     recorder = RecordingAddEntities()
     await async_setup_entry(hass, entry, recorder)
 
-    assert len(recorder.added) == 3
+    assert len(recorder.added) == 4

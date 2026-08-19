@@ -10,8 +10,17 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import CASAMBI_MANUFACTURER_ID, DOMAIN, ENOCEAN_MANUFACTURER_ID
 from .evidence_capture import EvidenceState
+from .radio_census import RadioCensusState, bucket_key_label
+
+# Cap how many manufacturer-ID/no-manufacturer-data entries the sensor
+# exposes, even though radio_census.py itself may track up to
+# MAX_TRACKED_MANUFACTURER_IDS -- keeps the exposed attributes small and
+# readable, ranked by what matters most for this diagnostic (press-window
+# traffic). Separate from, and in addition to, radio_census.py's own
+# tracking-cap `truncated` flag.
+_RADIO_CENSUS_DISPLAY_LIMIT = 20
 
 
 async def async_setup_entry(
@@ -21,8 +30,11 @@ async def async_setup_entry(
     advertisement_sensor = Ptm216bAdvertisementCounter(entry)
     capture_sensor = Ptm216bDesignationCaptureSensor(entry)
     evidence_sensor = Ptm216bEvidenceCaptureSensor(entry)
+    radio_census_sensor = Ptm216bRadioCensusSensor(entry)
     entry.runtime_data.sensor = advertisement_sensor
-    async_add_entities([advertisement_sensor, capture_sensor, evidence_sensor])
+    async_add_entities(
+        [advertisement_sensor, capture_sensor, evidence_sensor, radio_census_sensor]
+    )
 
     store = entry.runtime_data.commissioning_store
     if store is None:
@@ -151,6 +163,94 @@ class Ptm216bEvidenceCaptureSensor(SensorEntity):
             summary = collector.summary
             return asdict(summary) if summary is not None else {}
         return {}
+
+
+class Ptm216bRadioCensusSensor(SensorEntity):
+    """Expose only aggregate, privacy-safe radio-census counts (Phase 7).
+
+    See radio_census.py's module docstring for the Casambi/extended-
+    advertising investigation this diagnoses, and the README's "Radio
+    census (Phase 7)" section for the test procedure and how to interpret
+    the result. Never exposes an address, device/local name, raw payload
+    byte, RSSI, timestamp, or pseudonymous identifier -- only counts,
+    lengths, manufacturer-ID/service-UUID keys, and booleans.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Radio census"
+    _attr_icon = "mdi:radar"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_radio_census"
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to aggregate runtime changes after the entity is ready."""
+        await super().async_added_to_hass()
+        self._entry.runtime_data.radio_census_state_listener = self.async_write_ha_state
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Remove the runtime listener without retaining the entity."""
+        self._entry.runtime_data.radio_census_state_listener = None
+        await super().async_will_remove_from_hass()
+
+    @property
+    def native_value(self) -> str:
+        """Return the current bounded census phase, or inert."""
+        census = self._entry.runtime_data.radio_census
+        if census is None:
+            return RadioCensusState.INERT.value
+        return census.state.value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Return only the live phase total while running, or the full summary.
+
+        On ``complete``, entries are ranked by press-window count
+        descending and capped at :data:`_RADIO_CENSUS_DISPLAY_LIMIT` --
+        ``displayed_entries_truncated`` flags when the ranked list is
+        longer than what is shown. This is separate from
+        ``truncated``, which reflects radio_census.py's own
+        tracking-cap (whether every nearby manufacturer ID/service UUID
+        could even be tracked in the first place).
+        """
+        census = self._entry.runtime_data.radio_census
+        if census is None:
+            return {}
+        if census.state in (RadioCensusState.BASELINE, RadioCensusState.PRESS):
+            return {"phase_advertisement_count": census.current_phase_count}
+        if census.state is not RadioCensusState.COMPLETE:
+            return {}
+
+        summary = census.summary
+        if summary is None:
+            return {}
+
+        ranked = sorted(
+            summary.entries.items(),
+            key=lambda item: item[1].press_count,
+            reverse=True,
+        )
+        displayed = ranked[:_RADIO_CENSUS_DISPLAY_LIMIT]
+
+        enocean_key = bucket_key_label(ENOCEAN_MANUFACTURER_ID)
+        casambi_key = bucket_key_label(CASAMBI_MANUFACTURER_ID)
+        return {
+            "entries": {key: asdict(value) for key, value in displayed},
+            "truncated": summary.truncated,
+            "displayed_entries_truncated": len(displayed) < len(ranked),
+            f"enocean_{enocean_key}_press_count": (
+                summary.entries[enocean_key].press_count
+                if enocean_key in summary.entries
+                else 0
+            ),
+            f"casambi_{casambi_key}_press_count": (
+                summary.entries[casambi_key].press_count
+                if casambi_key in summary.entries
+                else 0
+            ),
+        }
 
 
 class _Ptm216bCommissionedSwitchDiagnosticSensor(SensorEntity):

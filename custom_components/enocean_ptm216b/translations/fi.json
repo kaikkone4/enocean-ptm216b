@@ -10,7 +10,8 @@
         "description": "Valitse rajattu, manuaalisesti käynnistettävä diagnostinen kaappaus. Kytkimen käyttöönotto tapahtuu nykyään tämän integraation laitesivun \"Lisää kytkin\" -toiminnolla -- se on nyt oma, kytkinkohtainen lisäysvelho (config subentry), ei enää osa tätä valikkoa. Asennus ja passiivinen havainnointi eivät koskaan käynnistä näitä itsestään.",
         "menu_options": {
           "designation_capture": "Kytkimen valinta (designation capture)",
-          "evidence_capture": "Rakennetodisteiden keruu (evidence capture)"
+          "evidence_capture": "Rakennetodisteiden keruu (evidence capture)",
+          "radio_census": "Radiokartoitus (radio census)"
         }
       }
     },
@@ -18,7 +19,8 @@
       "already_configured": "Laite on jo määritetty",
       "designation_capture_started": "Kytkimen valinta käynnistetty. Seuraa Designation capture -sensorin baseline-, press- ja confirmation-vaiheita.",
       "evidence_capture_started": "Todisteiden keruu käynnistetty. Seuraa Evidence capture -sensoria 90 sekunnin keruuikkunan ajan.",
-      "no_designated_device": "Tässä istunnossa ei ole vielä valittua laitetta. Aja ensin kytkimen valinta ja käynnistä todisteiden keruu sen jälkeen uudelleen."
+      "no_designated_device": "Tässä istunnossa ei ole vielä valittua laitetta. Aja ensin kytkimen valinta ja käynnistä todisteiden keruu sen jälkeen uudelleen.",
+      "radio_census_started": "Radiokartoitus käynnistetty. Pidä testattava kytkin hiljaa 20 sekunnin lähtötasovaiheen ajan, paina sitä sitten toistuvasti 40 sekunnin painallusvaiheen ajan, ja lue tulos Radio census -sensorista."
     }
   },
   "config_subentries": {

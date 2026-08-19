@@ -574,6 +574,126 @@ normal rename-wins behavior.
    Assistant again. Confirm that entity keeps your custom name while
    every other, never-renamed entity still shows the new "Button …" name.
 
+## Radio census (Phase 7)
+
+### Why this exists
+
+Some of the user's EnOcean PTM switches can be paired to a **Casambi**
+lighting network. When paired, this integration's normal, EnOcean-filtered
+observer sees **zero** advertisements from that switch, and only a physical
+EnOcean-Tool factory reset restores it. Research recorded in
+[docs/evidence-findings.md](docs/evidence-findings.md) and
+[docs/decoder-test-preparation.md](docs/decoder-test-preparation.md)
+established that Casambi commissions PTM modules over NFC, and that PTM
+modules have NFC-writable registers able to move telegrams to a different
+manufacturer ID, to non-BLE "custom radio channels" (40-78), or to a
+different PHY/data rate -- but *which* of those Casambi actually does was,
+until now, unknown.
+
+A phone (nRF Connect) standing next to a Casambi luminaire captured its
+manufacturer data directly: manufacturer ID **0x03C3** ("Casambi
+Technologies Oy"), a **159-byte** value, connectable, ~535 ms interval. A
+159-byte value is far beyond the 31-byte legacy BLE advertising limit, so
+Casambi devices use **BLE 5 extended advertising** -- and the user's
+ESPHome Bluetooth proxies are `board: esp32dev` (original ESP32, Bluetooth
+4.2), which **cannot receive extended advertising at all**. So a plausible
+explanation for the "silence" is not that a Casambi-paired switch stops
+transmitting, but that it moves to a transmission form this Home Assistant
+installation's specific receive path is physically incapable of hearing,
+while a modern phone standing next to it hears it fine. See
+[docs/evidence-findings.md](docs/evidence-findings.md)'s "User-observed
+Casambi advertisement" note for the full record of this observation and its
+confidence level.
+
+The radio census answers, with data: **what can this Home Assistant
+installation's Bluetooth receive path actually hear, and does anything
+appear in correlation with pressing a switch?**
+
+### What it does
+
+Radio census is available only from the integration's **Reconfigure** flow,
+alongside Designation capture and Evidence capture -- it does **not**
+require a designated device, since it is a broad diagnostic rather than a
+per-switch one. Starting it registers this integration's own additional,
+still-passive Bluetooth callback -- unlike the normal callback (filtered to
+manufacturer ID 0x03DA), this one hears **every** nearby advertisement, of
+any manufacturer, connectable or not -- for exactly the census's own
+bounded duration; it is unregistered again the moment the census ends.
+Starting a designation or evidence capture cancels a running radio census,
+and vice versa, exactly like designation and evidence capture already
+cancel each other.
+
+Two bounded phases, driven automatically:
+
+1. **`baseline` (20 seconds):** keep the switch under test, and everything
+   else nearby, quiet.
+2. **`press` (40 seconds):** press the switch under test repeatedly.
+
+Then a terminal **`complete`** state (or **`inert`** after cancelling).
+
+The **Radio census** diagnostic sensor exposes only:
+
+- state: `inert`, `baseline`, `press`, or `complete`
+- while `baseline`/`press`: `phase_advertisement_count`, the running total
+  for the active phase only
+- while `complete`: `entries` (per-manufacturer-ID summary, plus one bucket
+  for advertisements with no manufacturer data at all, ranked by
+  press-window count descending and capped at the top 20 --
+  `displayed_entries_truncated` flags when more existed than were shown),
+  `truncated` (whether the underlying tracking cap of 64 manufacturer IDs
+  or 32 service UUIDs was ever hit), and two convenience fields,
+  `enocean_0x03da_press_count` and `casambi_0x03c3_press_count`, so you do
+  not have to hunt through `entries` for the two IDs that matter most here
+
+Each entry in `entries` has: `baseline_count`, `press_count`,
+`distinct_devices` (a count only), `max_value_length` (the largest
+manufacturer-data value length seen for that ID), `connectable_seen`, and,
+for the no-manufacturer-data bucket only, `service_uuids` (short-form
+16-bit UUIDs, capped at 32).
+
+### Privacy limits (stricter than evidence capture -- this is a broad scan)
+
+Never retained or exposed, anywhere: a BLE address, a device/local name (a
+local name can be personal, e.g. "Someone's iPhone"), a raw payload byte,
+RSSI, tx power, a timestamp, a pseudonymous identifier itself, or the
+receiving adapter/proxy identity. Only counts, byte lengths, manufacturer
+ID keys, short-form service UUIDs, and booleans are ever aggregated or
+exposed. All state is runtime-only and is cleared on cancel, on unload, and
+on every fresh census start. Reception stays passive throughout -- no
+active scanning, no connections.
+
+### Safe user-visible test
+
+1. From **Settings → Devices & services → EnOcean PTM 216B BLE**, choose
+   **Reconfigure**, then **Radio census**.
+2. During the 20-second `baseline` phase, keep the switch under test (and
+   everything else nearby) quiet.
+3. When the state becomes `press`, press the switch under test repeatedly
+   for the 40-second window.
+4. Wait for `complete`, then read the **Radio census** sensor's attributes.
+
+### How to interpret the result
+
+- **A manufacturer ID whose `press_count` is high while its
+  `baseline_count` is close to zero is the switch under test.** If that
+  turns out to be `0x03da` (EnOcean), the switch is still transmitting in
+  its normal form and this installation can hear it -- the original
+  silence has some other cause. If it turns out to be `0x03c3` (Casambi),
+  the switch itself is now advertising as a Casambi device, not an EnOcean
+  one -- a very different finding from "invisible."
+- **If NO entry anywhere shows a `max_value_length` above roughly 31
+  bytes**, this installation's Bluetooth receive path is not getting BLE 5
+  extended advertising **at all** -- typical of original ESP32 / Bluetooth
+  4.2 proxies. In that case, an extended-advertising device (Casambi
+  luminaires included) is invisible to this installation regardless of
+  what it transmits, and the radio census cannot see it either -- a
+  negative result here does not clear Casambi of the hypothesis above, it
+  narrows the explanation to "this receive path cannot hear that
+  transmission form at all."
+- **Casambi = manufacturer ID `0x03C3`; EnOcean = manufacturer ID
+  `0x03DA`.** Both have their own convenience field in the sensor's
+  attributes, per above.
+
 ## Test installation with HACS
 
 Requires Home Assistant **2025.7.0** or newer (Phase 5A's per-switch

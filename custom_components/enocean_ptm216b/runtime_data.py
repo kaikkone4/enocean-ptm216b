@@ -11,6 +11,7 @@ from .commissioning_store import CommissioningStore
 from .evidence_capture import EvidenceCollector, EvidenceScheduler, EvidenceState
 from .identity import device_handle, device_identifier
 from .press_timing import PressAction, PressTimingTracker
+from .radio_census import RadioCensus, RadioCensusScheduler, RadioCensusState
 from .telegram import ButtonPattern, Ptm216bButtonState, normalize_button_pattern
 
 DESIGNATION_BASELINE_SECONDS = 10.0
@@ -26,6 +27,22 @@ CaptureStateListener = Callable[[], None]
 # machine that decides when each one fires.
 ButtonEventListener = Callable[[PressAction], None]
 DiagnosticsListener = Callable[[], None]
+# The injection point letting config_flow.py (the one place with a `hass`
+# reference) register this runtime's own broad, unfiltered, still-passive
+# Bluetooth callback for exactly the radio census's own bounded duration --
+# see radio_census.py's module docstring for why the normal
+# manufacturer-filtered callback in __init__.py cannot be reused for this.
+# The handler signature mirrors record_advertisement_observation's own
+# (address, manufacturer_data, connectable) shape, plus the service-UUID set
+# the census also needs.
+RadioCensusCallbackCancel = Callable[[], None]
+RadioCensusAdvertisementHandler = Callable[
+    [str, dict[int, bytes], set[str], bool], None
+]
+RadioCensusRegisterUnfiltered = Callable[
+    [RadioCensusAdvertisementHandler], RadioCensusCallbackCancel
+]
+RadioCensusDiagnosticsListener = Callable[[], None]
 
 
 class CaptureState(Enum):
@@ -188,6 +205,13 @@ class Ptm216bRuntimeData:
     evidence_state_listener: CaptureStateListener | None = field(
         default=None, repr=False
     )
+    radio_census: RadioCensus | None = field(default=None, repr=False)
+    radio_census_state_listener: RadioCensusDiagnosticsListener | None = field(
+        default=None, repr=False
+    )
+    _radio_census_unregister: RadioCensusCallbackCancel | None = field(
+        default=None, repr=False
+    )
     commissioning_store: CommissioningStore | None = field(default=None, repr=False)
     commissioned_switches: dict[str, CommissionedSwitchRuntime] = field(
         default_factory=dict, repr=False
@@ -196,16 +220,22 @@ class Ptm216bRuntimeData:
     def start_designation_capture(self, schedule: CaptureScheduler) -> None:
         """Start a bounded baseline only in response to a manual request.
 
-        Cancels a *running* evidence capture only. A completed evidence
-        window (``complete``/``no_data``/``aborted``) is left untouched so
-        its structural summary survives until the user starts a new
-        evidence capture or the entry is unloaded.
+        Cancels a *running* evidence capture and a *running* radio census
+        only. A completed evidence window (``complete``/``no_data``/
+        ``aborted``) or a completed radio census (``complete``) is left
+        untouched so its structural summary survives until the user starts
+        a new capture of that same kind or the entry is unloaded.
         """
         if (
             self.evidence_collector is not None
             and self.evidence_collector.state is EvidenceState.COLLECTING
         ):
             self.cancel_evidence_capture()
+        if self.radio_census is not None and self.radio_census.state in (
+            RadioCensusState.BASELINE,
+            RadioCensusState.PRESS,
+        ):
+            self.cancel_radio_census()
         cancel_timer = self.capture_timer
         if cancel_timer is not None:
             cancel_timer()
@@ -361,13 +391,18 @@ class Ptm216bRuntimeData:
         Refuses as a no-op and returns ``False`` when no device has been
         designated yet in this runtime session; the config flow maps that to
         the ``no_designated_device`` abort reason. Starting evidence capture
-        cancels a running designation capture, mirroring the reverse case in
-        :meth:`start_designation_capture`.
+        cancels a running designation capture and a running radio census,
+        mirroring the reverse case in :meth:`start_designation_capture`.
         """
         if self.designated_identifier is None:
             return False
         if self.capture_state is not CaptureState.INERT:
             self.cancel_designation_capture()
+        if self.radio_census is not None and self.radio_census.state in (
+            RadioCensusState.BASELINE,
+            RadioCensusState.PRESS,
+        ):
+            self.cancel_radio_census()
         self.cancel_evidence_capture()
         collector = EvidenceCollector(self.designated_identifier)
         collector.state_listener = self._notify_evidence_state
@@ -408,6 +443,110 @@ class Ptm216bRuntimeData:
         """Notify the privacy-safe evidence diagnostic entity of changes."""
         if self.evidence_state_listener is not None:
             self.evidence_state_listener()
+
+    def start_radio_census(
+        self,
+        schedule: RadioCensusScheduler,
+        register_unfiltered: RadioCensusRegisterUnfiltered,
+    ) -> None:
+        """Start the bounded baseline/press radio census.
+
+        Cancels a *running* designation capture and a *collecting* evidence
+        capture, mirroring :meth:`start_evidence_capture`'s own cross-cancel
+        convention -- a completed designation/evidence result is left
+        untouched. Does not require a designated device, unlike evidence
+        capture: the census is a broad diagnostic, not a per-switch one.
+
+        Registers this runtime's own unfiltered Bluetooth callback (via
+        ``register_unfiltered``, injected by config_flow.py -- the one place
+        with a ``hass`` reference) for exactly this census's duration; see
+        :meth:`_notify_radio_census` for where it is unregistered again.
+        Always replaces a previous census of its own, same as evidence
+        capture replacing itself on a fresh :meth:`start_evidence_capture`.
+        """
+        if self.capture_state is not CaptureState.INERT:
+            self.cancel_designation_capture()
+        if (
+            self.evidence_collector is not None
+            and self.evidence_collector.state is EvidenceState.COLLECTING
+        ):
+            self.cancel_evidence_capture()
+        self.cancel_radio_census()
+        census = RadioCensus()
+        census.state_listener = self._notify_radio_census
+        self.radio_census = census
+        census.start(schedule)
+        self._radio_census_unregister = register_unfiltered(
+            self._handle_radio_census_advertisement
+        )
+
+    def cancel_radio_census(self) -> None:
+        """Cancel the census window and discard all ephemeral census state.
+
+        A no-op if nothing is running -- ``census.cancel()`` still notifies
+        :meth:`_notify_radio_census`, which unregisters this runtime's
+        unfiltered callback if it is still registered (harmless if it was
+        already unregistered by a prior ``complete`` transition).
+        """
+        census = self.radio_census
+        if census is None:
+            return
+        census.cancel()
+
+    def _handle_radio_census_advertisement(
+        self,
+        address: str,
+        manufacturer_data: dict[int, bytes],
+        service_uuids: set[str],
+        connectable: bool,
+    ) -> None:
+        """Feed one broadly-matched callback into the active census, if any.
+
+        Computes a transient pseudonymous identifier from the address only
+        to route the callback -- the address itself is never retained here
+        or passed any further; see ``radio_census.RadioCensus.
+        record_advertisement`` for the identifier's own bounded, cleared
+        lifetime once inside the census.
+        """
+        census = self.radio_census
+        if census is None:
+            return
+        try:
+            identifier = device_identifier(self._hmac_secret, address)
+        except ValueError:
+            return
+        census.record_advertisement(
+            identifier, manufacturer_data, service_uuids, connectable
+        )
+        self._notify_radio_census()
+
+    def _notify_radio_census(self) -> None:
+        """Unregister this runtime's unfiltered callback once the census
+        leaves its listening phases, then notify the diagnostic entity.
+
+        Covers every path that ends ``baseline``/``press``: the timer-driven
+        ``complete`` transition and :meth:`cancel_radio_census` -- the same
+        "a timer-driven terminal transition must still notify" rule fixed
+        for evidence capture in Phase 5A. Also fires, harmlessly, on every
+        accepted advertisement while still ``baseline``/``press`` (mirroring
+        :meth:`record_evidence_callback`'s own double-notification note), so
+        the sensor's live ``phase_advertisement_count`` stays current too.
+        """
+        census = self.radio_census
+        if census is not None and census.state not in (
+            RadioCensusState.BASELINE,
+            RadioCensusState.PRESS,
+        ):
+            self._unregister_radio_census_callback()
+        if self.radio_census_state_listener is not None:
+            self.radio_census_state_listener()
+
+    def _unregister_radio_census_callback(self) -> None:
+        """Cancel this runtime's own unfiltered Bluetooth callback, if any."""
+        unregister = self._radio_census_unregister
+        self._radio_census_unregister = None
+        if unregister is not None:
+            unregister()
 
     def commissioned_switch_runtime(
         self, canonical_address: str
