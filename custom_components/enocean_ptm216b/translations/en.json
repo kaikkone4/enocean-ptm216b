@@ -95,6 +95,23 @@
       }
     }
   },
+  "entity": {
+    "event": {
+      "button": {
+        "name": "Button {button}",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "press": "Pressed",
+              "release": "Released",
+              "short_press": "Short press",
+              "long_press": "Long press"
+            }
+          }
+        }
+      }
+    }
+  },
   "device_automation": {
     "trigger_type": {
       "press": "\"{subtype}\" pressed",
@@ -103,12 +120,12 @@
       "long_press": "\"{subtype}\" long press (held)"
     },
     "trigger_subtype": {
-      "A0": "A0",
-      "A1": "A1",
-      "B0": "B0",
-      "B1": "B1",
-      "A0+B0": "A0+B0",
-      "A1+B1": "A1+B1"
+      "A0": "Button A0",
+      "A1": "Button A1",
+      "B0": "Button B0",
+      "B1": "Button B1",
+      "A0+B0": "Buttons A0+B0 together",
+      "A1+B1": "Buttons A1+B1 together"
     }
   }
 }
