@@ -1,11 +1,15 @@
 {
   "domain": "enocean_ptm216b",
   "name": "EnOcean PTM 216B BLE",
-  "codeowners": ["@kaikkone4"],
+  "codeowners": [
+    "@kaikkone4"
+  ],
   "config_flow": true,
-  "dependencies": ["bluetooth_adapters"],
+  "dependencies": [
+    "bluetooth_adapters"
+  ],
   "documentation": "https://github.com/kaikkone4/enocean-ptm216b",
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/kaikkone4/enocean-ptm216b/issues",
-  "version": "0.2.1"
+  "version": "0.3.0"
 }
